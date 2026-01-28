@@ -7,7 +7,7 @@ Este proyecto será desarrollado utilizando **A-Frame**, junto con **HTML, CSS y
 
 El juego busca recrear la esencia del GALAGA clásico, incorporando mecánicas sencillas, controles intuitivos y un diseño visual atractivo, aplicando conocimientos de desarrollo web, programación y gráficos interactivos.
 
-## Autores
+## Desarrolladores
 - Juan Francisco Campero Enciso  
 - José Angel Malo Martinez  
 - Luis Angel Peña Escamilla  
