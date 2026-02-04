@@ -81,7 +81,33 @@
                     dir: alternate;
                     loop: true;"
             ></a-cone>
+
+            <a-box
+                color="orange"
+                position="3 1 -4"
+                width="1"
+                height="1"
+                depth="1"
+                animation="
+                    property: rotation;
+                    to: 360 0 360;
+                    dur: 3000;
+                    loop: true;"> 
+            </a-box>
             
+            <a-cone
+                color="pink"
+                position="0 0 -6"
+                width="4"
+                height="2"
+                animation="
+                    property: opacity;
+                    from: 1;
+                    to: 0.2;
+                    dur: 2000;
+                    dir: alternate;
+                    loop: true;"
+            ></a-cone>
             <a-sky color="#EEEEEE"></a-sky>
         </a-scene>
     </body>
