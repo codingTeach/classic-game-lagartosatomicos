@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <script src="https://aframe.io/releases/1.0.0/aframe.min.js"></script>
+    </head>
+    <body>
+        <a-scene>
+            <a-box
+                color="blue" position="0 1 -2"
+                 animation="
+                    property: scale;
+                    from: 1 1 1;
+                    to: 2 2 2;
+                    dur: 1000;
+                    startEvents: click;
+                    dir: alternate;
+                    loop: true;"
+                >
+            </a-box>
+            <a-sphere
+                color="red"
+                position="2 1.25 -5"
+                radius="1.25"
+                animation="
+                    property: scale;
+                    from: 1 1 1;
+                    to: 2 2 2;
+                    dur: 1000;
+                    startEvents: click;
+                    dir: alternate;
+                    loop: true;"
+            ></a-sphere>
+            <a-cylinder
+                color="green"
+                position="-2 0.75 -3"
+                radius="0.5"
+                height="1.5"
+                 animation="
+                    property: scale;
+                    from: 1 1 1;
+                    to: 2 2 2;
+                    dur: 1000;
+                    startEvents: click;
+                    dir: alternate;
+                    loop: true;"
+            ></a-cylinder>
+            
+            <a-plane
+                width="20"
+                height="20"
+                color="teal"
+                rotation="-90 0 0"
+            ></a-plane>
+            
+            <a-camera>
+                <a-cursor></a-cursor>
+            </a-camera>
+            
+            <a-sky color="#EEEEEE"></a-sky>
+        </a-scene>
+    </body>
+</html>
