@@ -55,6 +55,32 @@
             <a-camera>
                 <a-cursor></a-cursor>
             </a-camera>
+
+            <a-box
+                color="yellow"
+                position="0 2 -5"
+                width="1"
+                height="1"
+                depth="1"
+                animation="
+                    property: rotation;
+                    to: 0 360 0;
+                    dur: 2000;
+                    loop: true;"
+            ></a-box>
+            <a-cone
+                color="purple"
+                position="-3 1 -2"
+                radius-bottom="0.75"
+                radius-top="0.1"
+                height="1.5"
+                animation="
+                    property: position;
+                    to: -3 2.5 -2;
+                    dur: 1500;
+                    dir: alternate;
+                    loop: true;"
+            ></a-cone>
             
             <a-sky color="#EEEEEE"></a-sky>
         </a-scene>
