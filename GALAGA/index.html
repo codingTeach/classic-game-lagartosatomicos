@@ -1,0 +1,931 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="utf-8" />
+    <title>Galaga 3D - A-Frame MVP</title>
+    <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+</head>
+
+<body>
+    <a-scene background="color: #06070f">
+        <!-- LUZ -->
+        <a-entity light="type: ambient; intensity: 0.6"></a-entity>
+        <a-entity light="type: directional; intensity: 0.9" position="1 3 2"></a-entity>
+
+        <!-- Assets: modelos GLB locales -->
+        <a-assets timeout="10000">
+            <a-asset-item id="sceneModel" src="playermodel.glb"></a-asset-item>
+        </a-assets>
+
+        <!-- “TUNEL” / REFERENCIAS VISUALES -->
+        <a-entity id="lane">
+            <a-plane rotation="-90 0 0" width="40" height="400" position="0 0 -160" color="#0b1020"></a-plane>
+            <a-entity id="stars"></a-entity>
+        </a-entity>
+
+        <!-- HUD se mueve dentro de la cámara para que siga al jugador -->
+
+        <!-- PLAYER RIG: nave + cámara atrás -->
+        <a-entity id="playerRig" position="0 1 0" player-controller>
+            <!-- nave (modelo GLB local — muestra solo "Avionsito") -->
+            <a-entity id="playerShip" gltf-model="#sceneModel" gltf-part="name: Avionsito" scale="0.5 0.5 0.5" rotation="0 180 0" position="0 0 0"></a-entity>
+
+            <!-- cámara tercera persona desde atrás --> 
+            <a-entity id="cam" camera look-controls="enabled: false" position="0 1.2 3.2"
+                rotation="-10 0 0">
+                <!-- HUD fijado a la cámara: siempre visible -->
+                <a-text id="hud" value="HP: 3   Score: 0   Wave: 1" position="-0.85 0.45 -1.2" width="2.4" color="#0ff" font="monoid"></a-text>
+                <a-text id="combo-hud" value="" position="0 0.35 -1.2" width="1.8" color="#ff0" align="center"></a-text>
+                <a-text id="wave-message" value="" position="0 0.05 -1.2" width="3" color="#0f0" align="center"></a-text>
+            </a-entity>
+        </a-entity>
+
+        <!-- Contenedores -->
+        <a-entity id="bullets"></a-entity>
+        <a-entity id="enemies"></a-entity>
+        <a-entity id="powerups"></a-entity>
+        <a-entity id="particles"></a-entity>
+
+        <!-- Sistema de juego mejorado -->
+        <a-entity game-manager></a-entity>
+        <a-entity enemy-spawner="playerSelector: #playerRig; containerSelector: #enemies; waveEvery: 8; enemiesPerWave: 6"></a-entity>
+    </a-scene>
+
+    <script>
+
+        /* ===== Componente gltf-part =====
+         * Usa gltf-model para cargar un GLB que contiene varios objetos,
+         * y oculta todos excepto el nodo con el nombre indicado.
+         */
+        AFRAME.registerComponent('gltf-part', {
+            schema: {
+                name: { type: 'string', default: '' }
+            },
+            init() {
+                this.el.addEventListener('model-loaded', () => this.filterModel());
+            },
+            filterModel() {
+                const targetName = this.data.name;
+                if (!targetName) return;
+                const model = this.el.getObject3D('mesh');
+                if (!model) return;
+                model.traverse((node) => {
+                    // Solo ocultar nodos del primer nivel (hijos directos de la Scene)
+                    if (node.parent === model) {
+                        node.visible = (node.name === targetName);
+                    }
+                });
+            }
+        });
+
+        AFRAME.registerComponent("enemy-bullet", {
+            schema: {
+                speed: { default: 18 },   // unidades/seg
+                ttl: { default: 3.0 },    // segundos
+                radius: { default: 0.2 }, // para colisión simple
+            },
+            init() {
+                this.life = this.data.ttl;
+                // Cache player ref (si existe)
+                this.playerEl = this.el.sceneEl.querySelector("#playerRig") || this.el.sceneEl.querySelector("#playerShip");
+            },
+            tick(time, dt) {
+                const d = dt / 1000;
+                this.life -= d;
+
+                // Avanza hacia el jugador (en +Z si el jugador va hacia -Z)
+                this.el.object3D.position.z += this.data.speed * d;
+
+                // Colisión simple vs jugador (si existe)
+                if (this.playerEl) {
+                    const p = this.playerEl.object3D.position;
+                    const b = this.el.object3D.position;
+                    const dx = p.x - b.x, dy = p.y - b.y, dz = p.z - b.z;
+                    const dist2 = dx * dx + dy * dy + dz * dz;
+                    const hitR = (this.data.radius + 0.6); // 0.6 ~ radio aprox jugador
+                    if (dist2 < hitR * hitR) {
+                        this.el.sceneEl.emit("enemyHitPlayer", { damage: 1, bullet: this.el });
+                        safeRemove(this.el);
+                        return;
+                    }
+                }
+
+                if (this.life <= 0) safeRemove(this.el);
+            }
+        });
+
+
+        /** =========================
+         *  ENEMY (IA simple)
+         *  Estados:
+         *   - "entry": entra con curva
+         *   - "patrol": se mueve en seno
+         *   - "attack": se lanza hacia el jugador y luego vuelve
+         *  ========================= */
+        AFRAME.registerComponent("enemy-ai", {
+            schema: {
+                hp: { default: 1 },
+
+                // Movimiento
+                approachSpeed: { default: 8 }, // hacia +Z
+                patrolAmp: { default: 2.0 },
+                patrolFreq: { default: 2.2 },
+
+                // Ataque
+                attackChancePerSec: { default: 0.25 }, // probabilidad de iniciar ataque (por segundo)
+                attackSpeed: { default: 16 },
+                retreatSpeed: { default: 12 },
+
+                // Disparo
+                fireRate: { default: 1.2 },     // seg
+                fireJitter: { default: 0.6 },   // random extra
+                bulletSpeed: { default: 18 },
+
+                // Referencias / límites
+                playerSelector: { default: "#playerRig" },
+                boundsX: { default: 7 },
+                minZFromPlayer: { default: -90 }, // spawns típicos
+                despawnBehind: { default: 10 },   // si pasa al jugador por mucho
+            },
+
+            init() {
+                this.state = "entry";
+                this.t = Math.random() * 999;
+                this.fireT = 0.4 + Math.random() * 0.8;
+                this.currentHP = this.data.hp; // Track HP separately
+                this.playerEl = this.el.sceneEl.querySelector(this.data.playerSelector)
+                    || this.el.sceneEl.querySelector("#playerShip");
+
+                // Para animar entrada: punto “home” al que quiere llegar
+                const p = this.el.object3D.position;
+                this.home = { x: p.x, y: p.y, z: p.z };
+
+                // inicio entry desde un poco más lejos y arriba
+                p.y += 2 + Math.random() * 1.5;
+                p.z -= 12 + Math.random() * 10;
+
+                // Colisión con balas de jugador (si tu juego emite "playerBulletHit")
+                // Alternativa: tu manager puede llamar el método takeDamage directamente.
+                this.el.addEventListener("takeDamage", (e) => {
+                    const dmg = (e.detail && e.detail.damage) ? e.detail.damage : 1;
+                    this.takeDamage(dmg);
+                });
+            },
+
+            takeDamage(dmg) {
+                this.currentHP -= dmg;
+                if (this.currentHP <= 0) {
+                    const pos = this.el.object3D.position;
+                    this.el.sceneEl.emit("enemyDied", { 
+                        enemy: this.el, 
+                        score: 10,
+                        x: pos.x,
+                        y: pos.y,
+                        z: pos.z
+                    });
+                    safeRemove(this.el);
+                }
+            },
+
+            spawnBullet() {
+                const o = this.el.object3D.position;
+
+                const b = document.createElement("a-sphere");
+                b.setAttribute("radius", 0.07);
+                b.setAttribute("material", "color: #bb6bd9; emissive: #bb6bd9; emissiveIntensity: 0.55");
+                b.setAttribute("position", `${o.x} ${o.y} ${o.z + 0.8}`);
+                b.setAttribute("enemy-bullet", `speed: ${this.data.bulletSpeed}; ttl: 3; radius: 0.2`);
+
+                // Si tienes un contenedor #bullets, lo usamos; si no, al scene.
+                const container = this.el.sceneEl.querySelector("#bullets") || this.el.sceneEl;
+                container.appendChild(b);
+            },
+
+            tick(time, dt) {
+                const d = dt / 1000;
+                const obj = this.el.object3D;
+                const p = this.playerEl ? this.playerEl.object3D.position : null;
+
+                // Disparo (solo si está relativamente cerca del “carril”)
+                this.fireT -= d;
+                if (this.fireT <= 0) {
+                    this.fireT = this.data.fireRate + Math.random() * this.data.fireJitter;
+                    // Dispara si existe player y el enemigo no está demasiado lejos
+                    if (p && (obj.position.z - p.z) < 70) this.spawnBullet();
+                }
+
+                // Despawn si ya “rebasó” al jugador
+                if (p && obj.position.z > p.z + this.data.despawnBehind) {
+                    safeRemove(this.el);
+                    return;
+                }
+
+                // FSM
+                this.t += d;
+
+                if (this.state === "entry") {
+                    // Se acerca al plano de juego con suavizado a home (x,y,z)
+                    obj.position.z += this.data.approachSpeed * d;
+
+                    // Lerp hacia home en X/Y
+                    obj.position.x += (this.home.x - obj.position.x) * (d * 2.2);
+                    obj.position.y += (this.home.y - obj.position.y) * (d * 2.2);
+
+                    // Cuando llega “cerca” de la homeZ, pasa a patrol
+                    if (obj.position.z >= this.home.z - 0.5) {
+                        this.state = "patrol";
+                        this.entryBaseX = obj.position.x;
+                        this.entryBaseY = obj.position.y;
+                    }
+                    return;
+                }
+
+                if (this.state === "patrol") {
+                    // Patrulla en X con seno, y avanza lentamente para presión
+                    const wave = Math.sin(this.t * this.data.patrolFreq) * this.data.patrolAmp;
+                    obj.position.x = this.entryBaseX + wave;
+                    obj.position.x = Math.max(-this.data.boundsX, Math.min(this.data.boundsX, obj.position.x));
+
+                    obj.position.z += (this.data.approachSpeed * 0.55) * d;
+
+                    // Probabilidad de ataque por segundo
+                    if (p && Math.random() < this.data.attackChancePerSec * d) {
+                        this.state = "attack";
+                        this.attackTargetX = p.x;
+                        this.attackTargetY = p.y;
+                        this.attackStartZ = obj.position.z;
+                        this.attackPhase = "dive";
+                    }
+                    return;
+                }
+
+                if (this.state === "attack") {
+                    if (!p) {
+                        this.state = "patrol";
+                        return;
+                    }
+
+                    // Fase dive: persigue X/Y y se lanza en +Z rápido
+                    if (this.attackPhase === "dive") {
+                        obj.position.x += (this.attackTargetX - obj.position.x) * (d * 3.0);
+                        obj.position.y += (this.attackTargetY - obj.position.y) * (d * 3.0);
+                        obj.position.z += this.data.attackSpeed * d;
+
+                        // Si ya llegó al jugador (o lo pasó), cambia a retreat
+                        if (obj.position.z >= p.z + 1.5) {
+                            this.attackPhase = "retreat";
+                            // vuelve a un “home” nuevo (re-entra)
+                            this.home = {
+                                x: (Math.random() * 12) - 6,
+                                y: 1.2 + Math.random() * 2.2,
+                                z: p.z - (60 + Math.random() * 25)
+                            };
+                        }
+                        return;
+                    }
+
+                    // Fase retreat: se va “adelante” otra vez para re-formar
+                    if (this.attackPhase === "retreat") {
+                        // En retreat realmente queremos ir hacia -Z (adelante del jugador),
+                        // porque el jugador va hacia -Z. Así que restamos Z.
+                        obj.position.z -= this.data.retreatSpeed * d;
+
+                        obj.position.x += (this.home.x - obj.position.x) * (d * 1.8);
+                        obj.position.y += (this.home.y - obj.position.y) * (d * 1.8);
+
+                        // cuando ya está suficientemente adelante, vuelve a entry->patrol
+                        if (obj.position.z <= this.home.z) {
+                            this.state = "entry";
+                        }
+                    }
+                }
+            }
+        });
+
+
+        /** =========================
+         *  ENEMY SPAWNER (oleadas)
+         *  - spawnea formaciones Galaga-like
+         *  - depende del player Z para colocar “adelante”
+         *  ========================= */
+        AFRAME.registerComponent("enemy-spawner", {
+            schema: {
+                playerSelector: { default: "#playerRig" },
+                containerSelector: { default: "#enemies" },
+
+                waveEvery: { default: 1.1 },  // seg
+                enemiesPerWave: { default: 5 },
+
+                // Distancia delante del jugador para spawn
+                aheadMin: { default: 70 },
+                aheadMax: { default: 95 }
+            },
+
+            init() {
+                this.t = 0;
+                this.playerEl = this.el.sceneEl.querySelector(this.data.playerSelector)
+                    || this.el.sceneEl.querySelector("#playerShip");
+                this.container = this.el.sceneEl.querySelector(this.data.containerSelector) || this.el.sceneEl;
+
+                this.waveIndex = 0;
+            },
+
+            tick(time, dt) {
+                const d = dt / 1000;
+                this.t -= d;
+                if (this.t > 0) return;
+
+                this.t = this.data.waveEvery;
+                this.spawnWave();
+            },
+
+            spawnEnemyAt(x, y, z, opts = {}) {
+                const e = document.createElement("a-entity");
+
+                // Usa el modelo único y muestra solo "Nave" (el alien)
+                e.setAttribute('gltf-model', '#sceneModel');
+                e.setAttribute('gltf-part', 'name: Nave');
+                e.setAttribute('scale', opts.scale || '0.5 0.5 0.5');
+                e.setAttribute('rotation', opts.rotation || '0 0 0');
+                e.setAttribute("position", `${x} ${y} ${z}`);
+
+                // Tunear por tipo
+                const cfg = [
+                    `hp:${opts.hp ?? 1}`,
+                    `approachSpeed:${opts.approachSpeed ?? (7 + Math.random() * 4)}`,
+                    `patrolAmp:${opts.patrolAmp ?? (1.0 + Math.random() * 2.2)}`,
+                    `patrolFreq:${opts.patrolFreq ?? (1.8 + Math.random() * 1.8)}`,
+                    `attackChancePerSec:${opts.attackChancePerSec ?? (0.18 + Math.random() * 0.22)}`,
+                    `fireRate:${opts.fireRate ?? (1.0 + Math.random() * 1.0)}`,
+                    `fireJitter:${opts.fireJitter ?? 0.6}`,
+                    `bulletSpeed:${opts.bulletSpeed ?? 18}`,
+                    `playerSelector:${opts.playerSelector ?? "#playerRig"}`
+                ].join(";");
+
+                e.setAttribute("enemy-ai", cfg);
+                this.container.appendChild(e);
+            },
+
+            spawnWave() {
+                if (!this.playerEl) return;
+
+                const pz = this.playerEl.object3D.position.z;
+                const ahead = this.data.aheadMin + Math.random() * (this.data.aheadMax - this.data.aheadMin);
+                const baseZ = pz - ahead; // adelante del jugador (más negativo)
+
+                // Alterna tipos de formación
+                const mode = this.waveIndex % 3;
+                this.waveIndex++;
+
+                if (mode === 0) {
+                    // V formation
+                    const n = this.data.enemiesPerWave;
+                    const centerX = 0;
+                    for (let i = 0; i < n; i++) {
+                        const side = (i % 2 === 0) ? 1 : -1;
+                        const step = Math.floor(i / 2) + 1;
+                        const x = centerX + side * step * 1.4;
+                        const y = 1.4 + step * 0.25;
+                        const z = baseZ - step * 1.2;
+                        this.spawnEnemyAt(x, y, z);
+                    }
+                    return;
+                }
+
+                if (mode === 1) {
+                    // Grid / bloque
+                    const rows = 2;
+                    const cols = Math.ceil(this.data.enemiesPerWave / rows);
+                    let count = 0;
+                    for (let r = 0; r < rows; r++) {
+                        for (let c = 0; c < cols; c++) {
+                            if (count >= this.data.enemiesPerWave) break;
+                            const x = (c - (cols - 1) / 2) * 1.8;
+                            const y = 1.4 + r * 1.1;
+                            const z = baseZ - r * 1.6;
+                            this.spawnEnemyAt(x, y, z, { attackChancePerSec: 0.12 + Math.random() * 0.18 });
+                            count++;
+                        }
+                    }
+                    return;
+                }
+
+                // mode === 2: arco/círculo parcial
+                const n = this.data.enemiesPerWave;
+                const radius = 5.5;
+                const start = -Math.PI * 0.85;
+                const end = -Math.PI * 0.15;
+                for (let i = 0; i < n; i++) {
+                    const t = i / Math.max(1, n - 1);
+                    const ang = start + (end - start) * t;
+                    const x = Math.cos(ang) * radius;
+                    const y = 1.6 + Math.sin(ang) * 1.2;
+                    const z = baseZ - (Math.abs(i - (n - 1) / 2) * 0.8);
+                    this.spawnEnemyAt(x, y, z, { patrolAmp: 1.2 + Math.random() * 1.0 });
+                }
+            }
+        });
+        // ---------- Power-ups ----------
+        AFRAME.registerComponent('powerup', {
+            schema: {
+                type: { default: 'shield' }, // shield, rapidfire, spread
+                speed: { default: 6 },
+                ttl: { default: 8 }
+            },
+            init() {
+                this.life = this.data.ttl;
+                this.rotSpeed = 2 + Math.random() * 2;
+            },
+            tick(time, dt) {
+                const d = dt / 1000;
+                this.life -= d;
+                const obj = this.el.object3D;
+                
+                // Avanza hacia el jugador
+                obj.position.z += this.data.speed * d;
+                obj.rotation.y += this.rotSpeed * d;
+                
+                // Colisión con jugador
+                const player = this.el.sceneEl.querySelector('#playerRig');
+                if (player) {
+                    const p = player.object3D.position;
+                    const dx = p.x - obj.position.x;
+                    const dy = p.y - obj.position.y;
+                    const dz = p.z - obj.position.z;
+                    if (Math.sqrt(dx*dx + dy*dy + dz*dz) < 1.2) {
+                        this.el.sceneEl.emit('powerupCollected', { type: this.data.type });
+                        safeRemove(this.el);
+                        return;
+                    }
+                }
+                
+                if (this.life <= 0) safeRemove(this.el);
+            }
+        });
+
+        // ---------- Particle System ----------
+        AFRAME.registerComponent('particle', {
+            schema: {
+                vx: { default: 0 },
+                vy: { default: 0 },
+                vz: { default: 0 },
+                life: { default: 0.6 }
+            },
+            init() {
+                this.age = 0;
+            },
+            tick(time, dt) {
+                const d = dt / 1000;
+                this.age += d;
+                
+                const obj = this.el.object3D;
+                obj.position.x += this.data.vx * d;
+                obj.position.y += this.data.vy * d;
+                obj.position.z += this.data.vz * d;
+                
+                // Fade out
+                const opacity = 1 - (this.age / this.data.life);
+                this.el.setAttribute('material', 'opacity', Math.max(0, opacity));
+                
+                if (this.age >= this.data.life) safeRemove(this.el);
+            }
+        });
+
+        // ---------- Helpers ----------
+        function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+        function dist(a, b) {
+            const dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+            return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        }
+        function safeRemove(el) {
+            if (el && el.parentNode) el.parentNode.removeChild(el);
+        }
+        
+        function spawnExplosion(scene, x, y, z, color = '#ff6600') {
+            const container = scene.querySelector('#particles') || scene;
+            for (let i = 0; i < 12; i++) {
+                const p = document.createElement('a-sphere');
+                p.setAttribute('radius', 0.08 + Math.random() * 0.08);
+                p.setAttribute('material', `color: ${color}; emissive: ${color}; emissiveIntensity: 0.8; opacity: 1`);
+                p.setAttribute('position', `${x} ${y} ${z}`);
+                
+                const angle = (Math.PI * 2 * i) / 12;
+                const speed = 3 + Math.random() * 4;
+                p.setAttribute('particle', `vx: ${Math.cos(angle) * speed}; vy: ${Math.sin(angle) * speed * 0.5}; vz: ${(Math.random() - 0.5) * 2}; life: ${0.4 + Math.random() * 0.4}`);
+                container.appendChild(p);
+            }
+        }
+
+        // ---------- Player Controller ----------
+        AFRAME.registerComponent('player-controller', {
+            schema: {
+                speed: { default: 7.0 },        // auto-avance (unidades/seg)
+                strafe: { default: 7.5 },       // movimiento lateral
+                boundsX: { default: 6.5 },      // límites carril
+                boundsY: { default: 3.0 },      // límites vertical (si quieres)
+                autoFireRate: { default: 0.18 } // segundos por disparo
+            },
+            init() {
+                this.keys = {};
+                this.fireT = 0;
+                this.shield = false;
+                this.rapidFire = false;
+                this.spreadShot = false;
+                this.powerupTimer = 0;
+                
+                window.addEventListener('keydown', (e) => this.keys[e.code] = true);
+                window.addEventListener('keyup', (e) => this.keys[e.code] = false);
+            },
+            
+            activatePowerup(type, duration = 8) {
+                this.powerupTimer = duration;
+                if (type === 'shield') {
+                    this.shield = true;
+                    this.el.querySelector('#playerShip').setAttribute('material', 'color', '#00ffff');
+                } else if (type === 'rapidfire') {
+                    this.rapidFire = true;
+                    this.data.autoFireRate = 0.08;
+                } else if (type === 'spread') {
+                    this.spreadShot = true;
+                }
+            },
+            tick(time, dt) {
+                const d = dt / 1000;
+                const pos = this.el.object3D.position;
+                // Powerup timer
+                if (this.powerupTimer > 0) {
+                    this.powerupTimer -= d;
+                    if (this.powerupTimer <= 0) {
+                        this.shield = false;
+                        this.rapidFire = false;
+                        this.spreadShot = false;
+                        this.data.autoFireRate = 0.18;
+                        this.el.querySelector('#playerShip').setAttribute('material', 'color', '#56ccf2');
+                    }
+                }
+                // auto-avanza hacia adelante (en -Z para “ir hacia el fondo”)
+                pos.z -= this.data.speed * d;
+
+                // movimiento lateral / vertical con teclas
+                let mx = 0, my = 0;
+                if (this.keys['ArrowLeft'] || this.keys['KeyA']) mx -= 1;
+                if (this.keys['ArrowRight'] || this.keys['KeyD']) mx += 1;
+                if (this.keys['ArrowUp'] || this.keys['KeyW']) my += 1;
+                if (this.keys['ArrowDown'] || this.keys['KeyS']) my -= 1;
+
+                pos.x = clamp(pos.x + mx * this.data.strafe * d, -this.data.boundsX, this.data.boundsX);
+                pos.y = clamp(pos.y + my * this.data.strafe * d, 0.6, this.data.boundsY);
+
+                // auto-disparo
+                this.fireT -= d;
+                if (this.fireT <= 0) {
+                    this.fireT = this.data.autoFireRate;
+                    if (this.spreadShot) {
+                        this.el.sceneEl.emit('spawnBullet', { spread: true });
+                    } else {
+                        this.el.sceneEl.emit('spawnBullet', { spread: false });
+                    }
+                }
+            }
+        });
+
+        // ---------- Bullet ----------
+        AFRAME.registerComponent('bullet', {
+            schema: { speed: { default: 30 }, ttl: { default: 1.8 } },
+            init() {
+                this.life = this.data.ttl;
+            },
+            tick(time, dt) {
+                const d = dt / 1000;
+                this.life -= d;
+                this.el.object3D.position.z -= this.data.speed * d; // sale hacia -Z
+                if (this.life <= 0) safeRemove(this.el);
+            }
+        });
+
+        // ---------- Enemy ----------
+        AFRAME.registerComponent('boss', {
+            schema: {
+                hp: { default: 50 },
+                speed: { default: 4 }
+            },
+            init() {
+                this.currentHP = this.data.hp;
+                this.maxHP = this.data.hp;
+                this.t = 0;
+                this.fireT = 0;
+                this.phase = 0;
+            },
+            takeDamage(dmg) {
+                this.currentHP -= dmg;
+                // Flash red
+                this.el.setAttribute('material', 'color', '#ff0000');
+                setTimeout(() => {
+                    this.el.setAttribute('material', 'color', '#ff00ff');
+                }, 100);
+                
+                if (this.currentHP <= 0) {
+                    const pos = this.el.object3D.position;
+                    this.el.sceneEl.emit('bossDied', { x: pos.x, y: pos.y, z: pos.z });
+                    spawnExplosion(this.el.sceneEl, pos.x, pos.y, pos.z, '#ff00ff');
+                    safeRemove(this.el);
+                }
+            },
+            tick(time, dt) {
+                const d = dt / 1000;
+                this.t += d;
+                this.fireT -= d;
+                
+                const obj = this.el.object3D;
+                const player = this.el.sceneEl.querySelector('#playerRig');
+                if (!player) return;
+                
+                const p = player.object3D.position;
+                
+                // Movement pattern
+                obj.position.x = Math.sin(this.t * 1.2) * 5;
+                obj.position.y = 2.5 + Math.cos(this.t * 0.8) * 1.5;
+                obj.position.z = p.z - 40 + Math.sin(this.t * 0.5) * 5;
+                
+                // Fire pattern
+                if (this.fireT <= 0) {
+                    this.fireT = 0.3;
+                    for (let i = -2; i <= 2; i++) {
+                        const b = document.createElement('a-sphere');
+                        b.setAttribute('radius', 0.1);
+                        b.setAttribute('material', 'color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 0.8');
+                        b.setAttribute('position', `${obj.position.x + i * 0.5} ${obj.position.y} ${obj.position.z}`);
+                        b.setAttribute('enemy-bullet', 'speed: 20; ttl: 4; radius: 0.25');
+                        const container = this.el.sceneEl.querySelector('#bullets');
+                        if (container) container.appendChild(b);
+                    }
+                }
+            }
+        });
+
+        // ---------- Game Manager ----------
+        AFRAME.registerComponent('game-manager', {
+            init() {
+                this.score = 0;
+                this.hp = 3;
+                this.wave = 1;
+                this.combo = 0;
+                this.comboTimer = 0;
+                this.kills = 0;
+                this.gameOver = false;
+
+                this.playerRigEl = document.querySelector('#playerRig');
+                this.player = this.playerRigEl.object3D;
+                this.playerController = null; // se resuelve lazy en getPlayerController()
+                this.enemiesEl = document.querySelector('#enemies');
+                this.bulletsEl = document.querySelector('#bullets');
+                this.powerupsEl = document.querySelector('#powerups');
+                this.hudEl = document.querySelector('#hud');
+                this.comboHudEl = document.querySelector('#combo-hud');
+                this.waveMessageEl = document.querySelector('#wave-message');
+
+                this.powerupSpawnTimer = 15; // First powerup after 15 segs
+                this.bossActive = false;
+
+                // estrellas mejoradas (decoración)
+                const stars = document.querySelector('#stars');
+                for (let i = 0; i < 200; i++) {
+                    const s = document.createElement('a-sphere');
+                    s.setAttribute('radius', 0.02 + Math.random() * 0.04);
+                    s.setAttribute('material', 'color: #ffffff; opacity: ' + (0.5 + Math.random() * 0.5));
+                    const x = (Math.random() * 80) - 40;
+                    const y = (Math.random() * 30) + 1;
+                    const z = (Math.random() * -500);
+                    s.setAttribute('position', `${x} ${y} ${z}`);
+                    stars.appendChild(s);
+                }
+
+                // eventos
+                this.el.sceneEl.addEventListener('spawnBullet', (e) => this.spawnBullet(e.detail));
+                this.el.sceneEl.addEventListener('enemyDied', (e) => this.onEnemyDied(e.detail));
+                this.el.sceneEl.addEventListener('enemyHitPlayer', (e) => this.onPlayerHit(e.detail));
+                this.el.sceneEl.addEventListener('powerupCollected', (e) => this.onPowerupCollected(e.detail));
+                this.el.sceneEl.addEventListener('bossDied', (e) => this.onBossDied(e.detail));
+                
+                // Mostrar mensaje inicial
+                this.showWaveMessage('WAVE 1 - START!');
+                
+                // Agregar listener para reiniciar
+                window.addEventListener('keydown', (e) => {
+                    if (e.code === 'KeyR' && this.gameOver) {
+                        this.restartGame();
+                    }
+                });
+            },
+            
+            onEnemyDied(detail) {
+                this.kills++;
+                this.combo++;
+                this.comboTimer = 2.0;
+                const comboBonus = Math.floor(this.combo / 5);
+                this.score += detail.score + (comboBonus * 5);
+                
+                if (detail.x !== undefined) {
+                    spawnExplosion(this.el.sceneEl, detail.x, detail.y, detail.z, '#ff6600');
+                }
+                
+                // Actualizar combo HUD
+                if (this.combo > 1) {
+                    this.comboHudEl.setAttribute('value', `COMBO x${this.combo}!`);
+                }
+                
+                this.updateHUD();
+            },
+            
+            getPlayerController() {
+                if (!this.playerController) {
+                    this.playerController = this.playerRigEl.components['player-controller'];
+                }
+                return this.playerController;
+            },
+
+            onPlayerHit(detail) {
+                const pc = this.getPlayerController();
+                if (pc && pc.shield) {
+                    // Shield absorbe el daño
+                    pc.shield = false;
+                    pc.powerupTimer = 0;
+                    return;
+                }
+                
+                this.hp -= detail.damage || 1;
+                this.updateHUD();
+                
+                if (this.hp <= 0) {
+                    this.endGame();
+                }
+            },
+            
+            onPowerupCollected(detail) {
+                const pc = this.getPlayerController();
+                if (pc) pc.activatePowerup(detail.type, 10);
+                this.score += 50;
+                this.updateHUD();
+            },
+            
+            onBossDied(detail) {
+                this.score += 500;
+                this.bossActive = false;
+                // Extra explosions for boss death
+                for (let i = 0; i < 3; i++) {
+                    setTimeout(() => {
+                        spawnExplosion(this.el.sceneEl, 
+                            detail.x + (Math.random() - 0.5) * 3, 
+                            detail.y + (Math.random() - 0.5) * 2, 
+                            detail.z + (Math.random() - 0.5) * 2, 
+                            '#ff00ff');
+                    }, i * 300);
+                }
+                this.updateHUD();
+                setTimeout(() => this.nextWave(), 2000);
+            },
+            
+            showWaveMessage(msg) {
+                this.waveMessageEl.setAttribute('value', msg);
+                setTimeout(() => {
+                    this.waveMessageEl.setAttribute('value', '');
+                }, 3000);
+            },
+            
+            nextWave() {
+                this.wave++;
+                this.showWaveMessage(`WAVE ${this.wave}`);
+                this.updateHUD();
+                
+                // Cada 3 ondas, spawn un boss
+                if (this.wave % 3 === 0) {
+                    setTimeout(() => this.spawnBoss(), 4000);
+                }
+            },
+            
+            spawnBoss() {
+                if (this.bossActive) return;
+                this.bossActive = true;
+                this.showWaveMessage('⚠ BOSS INCOMING! ⚠');
+                
+                const pz = this.player.position.z - 60;
+                const b = document.createElement('a-entity');
+                b.setAttribute('gltf-model', '#sceneModel');
+                b.setAttribute('gltf-part', 'name: Nave');
+                b.setAttribute('scale', '1.4 1.4 1.4');
+                b.setAttribute('position', `0 2.5 ${pz}`);
+                b.setAttribute('boss', `hp: ${30 + this.wave * 10}`);
+                this.enemiesEl.appendChild(b);
+            },
+            
+            spawnPowerup() {
+                const pz = this.player.position.z - (50 + Math.random() * 30);
+                const px = (Math.random() * 10) - 5;
+                const py = 1.5 + Math.random() * 1.5;
+                
+                const types = ['shield', 'rapidfire', 'spread'];
+                const colors = { shield: '#00ffff', rapidfire: '#ffff00', spread: '#ff00ff' };
+                const type = types[Math.floor(Math.random() * types.length)];
+                
+                const p = document.createElement('a-entity');
+                p.setAttribute('geometry', 'primitive: torus; radius: 0.4; radiusTubular: 0.1');
+                p.setAttribute('material', `color: ${colors[type]}; emissive: ${colors[type]}; emissiveIntensity: 0.8; metalness: 0.5`);
+                p.setAttribute('position', `${px} ${py} ${pz}`);
+                p.setAttribute('powerup', `type: ${type}`);
+                this.powerupsEl.appendChild(p);
+            },
+            
+            restartGame() {
+                window.location.reload();
+            },
+            
+            endGame() {
+                this.gameOver = true;
+                this.hudEl.setAttribute('value', `GAME OVER | Score: ${this.score} | Press R to Restart`);
+                document.querySelector('#playerRig').setAttribute('player-controller', 'speed: 0; autoFireRate: 999');
+                
+                // Parar spawner
+                const spawner = document.querySelector('[enemy-spawner]');
+                if (spawner) spawner.pause();
+            },
+
+            tick(time, dt) {
+                if (this.gameOver) return;
+                const d = dt / 1000;
+
+                // Combo timer
+                if (this.comboTimer > 0) {
+                    this.comboTimer -= d;
+                    if (this.comboTimer <= 0) {
+                        this.combo = 0;
+                        this.comboHudEl.setAttribute('value', '');
+                    }
+                }
+
+                // Powerup spawn timer
+                this.powerupSpawnTimer -= d;
+                if (this.powerupSpawnTimer <= 0) {
+                    this.powerupSpawnTimer = 12 + Math.random() * 8;
+                    this.spawnPowerup();
+                }
+
+                // Colisiones: balas jugador vs enemigos (incluido boss)
+                const enemies = Array.from(this.enemiesEl.children);
+                const bullets = Array.from(this.bulletsEl.querySelectorAll('[bullet]'));
+                for (const b of bullets) {
+                    const bp = b.object3D.position;
+                    for (const e of enemies) {
+                        if (!e.object3D) continue;
+                        const ep = e.object3D.position;
+                        const hitDist = e.components['boss'] ? 2.0 : 0.8;
+                        if (dist(bp, ep) < hitDist) {
+                            safeRemove(b);
+                            if (e.components['boss']) {
+                                e.components['boss'].takeDamage(1);
+                            } else if (e.components['enemy-ai']) {
+                                e.components['enemy-ai'].takeDamage(1);
+                            } else {
+                                safeRemove(e);
+                                this.score += 10;
+                                this.updateHUD();
+                            }
+                            break;
+                        }
+                    }
+                }
+                // Balas enemigas se manejan via enemy-bullet + evento enemyHitPlayer -> onPlayerHit
+            },
+
+            updateHUD() {
+                this.hudEl.setAttribute('value', `HP: ${this.hp}   Score: ${this.score}   Wave: ${this.wave}`);
+            },
+
+            spawnBullet(detail) {
+                const p = this.player.position;
+                
+                if (detail && detail.spread) {
+                    // Disparo múltiple
+                    for (let i = -1; i <= 1; i++) {
+                        const b = document.createElement('a-sphere');
+                        b.setAttribute('radius', 0.07);
+                        b.setAttribute('material', 'color: #ff00ff; emissive: #ff00ff; emissiveIntensity: 0.7');
+                        b.setAttribute('position', `${p.x + i * 0.3} ${p.y} ${p.z - 1.2}`);
+                        b.setAttribute('bullet', 'speed: 35; ttl: 1.6');
+                        this.bulletsEl.appendChild(b);
+                    }
+                } else {
+                    // Disparo normal
+                    const b = document.createElement('a-sphere');
+                    b.setAttribute('radius', 0.08);
+                    b.setAttribute('material', 'color: #f2c94c; emissive: #f2c94c; emissiveIntensity: 0.6');
+                    b.setAttribute('position', `${p.x} ${p.y} ${p.z - 1.2}`);
+                    b.setAttribute('bullet', 'speed: 35; ttl: 1.6');
+                    this.bulletsEl.appendChild(b);
+                }
+            }
+        });
+    </script>
+</body>
+
+</html>
