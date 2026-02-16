@@ -219,6 +219,3 @@ Recrear el gameplay arcade de GALAGA, manteniendo:
 - Acciones rápidas y claras
 - Progresión por oleadas
 - Estética atractiva en 3D
-
-
-holaaaa
