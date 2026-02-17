@@ -13,9 +13,13 @@
         <a-entity light="type: ambient; intensity: 0.6"></a-entity>
         <a-entity light="type: directional; intensity: 0.9" position="1 3 2"></a-entity>
 
-        <!-- Assets: modelos GLB locales -->
+        <!-- Assets: modelos GLB locales
+         añadi los modeos de aliens -->
         <a-assets timeout="10000">
             <a-asset-item id="sceneModel" src="playermodel.glb"></a-asset-item>
+            <a-asset-item id="alien1Model" src="alien1.glb"></a-asset-item>
+            <a-asset-item id="alien2Model" src="alien2.glb"></a-asset-item>
+            <a-asset-item id="alien3Model" src="alien3.glb"></a-asset-item>
         </a-assets>
 
         <!-- “TUNEL” / REFERENCIAS VISUALES -->
@@ -323,15 +327,27 @@
             },
 
             init() {
-                this.t = 0;
+                this.t = this.data.waveEvery; // Iniciar con el timer lleno
                 this.playerEl = this.el.sceneEl.querySelector(this.data.playerSelector)
                     || this.el.sceneEl.querySelector("#playerShip");
                 this.container = this.el.sceneEl.querySelector(this.data.containerSelector) || this.el.sceneEl;
 
                 this.waveIndex = 0;
+                this.paused = false;
+                this.spawnedInitial = false;
             },
 
             tick(time, dt) {
+                if (this.paused) return; // No generar enemigos si está pausado
+                
+                // Generar la primera oleada inmediatamente
+                if (!this.spawnedInitial) {
+                    this.spawnedInitial = true;
+                    this.spawnWave();
+                    this.paused = true; // Pausar después de la primera oleada
+                    return;
+                }
+                
                 const d = dt / 1000;
                 this.t -= d;
                 if (this.t > 0) return;
@@ -343,11 +359,13 @@
             spawnEnemyAt(x, y, z, opts = {}) {
                 const e = document.createElement("a-entity");
 
-                // Usa el modelo único y muestra solo "Nave" (el alien)
-                e.setAttribute('gltf-model', '#sceneModel');
-                e.setAttribute('gltf-part', 'name: Nave');
+                // Seleccionar aleatoriamente uno de los 3 modelos de aliens
+                const alienModels = ['#alien1Model', '#alien2Model', '#alien3Model'];
+                const randomAlien = alienModels[Math.floor(Math.random() * alienModels.length)];
+                
+                e.setAttribute('gltf-model', randomAlien);
                 e.setAttribute('scale', opts.scale || '0.5 0.5 0.5');
-                e.setAttribute('rotation', opts.rotation || '0 0 0');
+                e.setAttribute('rotation', opts.rotation || '0 180 0');
                 e.setAttribute("position", `${x} ${y} ${z}`);
 
                 // Tunear por tipo
@@ -377,33 +395,39 @@
                 // Alterna tipos de formación
                 const mode = this.waveIndex % 3;
                 this.waveIndex++;
+                
+                // Notificar al game manager que se está generando una oleada
+                const gameManager = this.el.sceneEl.querySelector('[game-manager]');
+                if (gameManager && gameManager.components['game-manager']) {
+                    gameManager.components['game-manager'].enemiesInWave += this.data.enemiesPerWave;
+                }
 
                 if (mode === 0) {
-                    // V formation
+                    // V formation con más espacio
                     const n = this.data.enemiesPerWave;
                     const centerX = 0;
                     for (let i = 0; i < n; i++) {
                         const side = (i % 2 === 0) ? 1 : -1;
                         const step = Math.floor(i / 2) + 1;
-                        const x = centerX + side * step * 1.4;
-                        const y = 1.4 + step * 0.25;
-                        const z = baseZ - step * 1.2;
+                        const x = centerX + side * step * 2.2; // Aumentado de 1.4 a 2.2
+                        const y = 1.4 + step * 0.35;
+                        const z = baseZ - step * 2.0; // Aumentado de 1.2 a 2.0
                         this.spawnEnemyAt(x, y, z);
                     }
                     return;
                 }
 
                 if (mode === 1) {
-                    // Grid / bloque
+                    // Grid / bloque con más espacio
                     const rows = 2;
                     const cols = Math.ceil(this.data.enemiesPerWave / rows);
                     let count = 0;
                     for (let r = 0; r < rows; r++) {
                         for (let c = 0; c < cols; c++) {
                             if (count >= this.data.enemiesPerWave) break;
-                            const x = (c - (cols - 1) / 2) * 1.8;
-                            const y = 1.4 + r * 1.1;
-                            const z = baseZ - r * 1.6;
+                            const x = (c - (cols - 1) / 2) * 2.5; // Aumentado de 1.8 a 2.5
+                            const y = 1.4 + r * 1.5; // Aumentado de 1.1 a 1.5
+                            const z = baseZ - r * 2.2; // Aumentado de 1.6 a 2.2
                             this.spawnEnemyAt(x, y, z, { attackChancePerSec: 0.12 + Math.random() * 0.18 });
                             count++;
                         }
@@ -524,18 +548,37 @@
                 strafe: { default: 7.5 },       // movimiento lateral
                 boundsX: { default: 6.5 },      // límites carril
                 boundsY: { default: 3.0 },      // límites vertical (si quieres)
-                autoFireRate: { default: 0.18 } // segundos por disparo
+                fireRate: { default: 0.18 }     // cooldown entre disparos
             },
             init() {
                 this.keys = {};
                 this.fireT = 0;
+                this.canFire = true;
                 this.shield = false;
                 this.rapidFire = false;
                 this.spreadShot = false;
                 this.powerupTimer = 0;
                 
-                window.addEventListener('keydown', (e) => this.keys[e.code] = true);
+                window.addEventListener('keydown', (e) => {
+                    this.keys[e.code] = true;
+                    // Disparar con barra espaciadora
+                    if (e.code === 'Space' && this.canFire) {
+                        this.fire();
+                    }
+                });
                 window.addEventListener('keyup', (e) => this.keys[e.code] = false);
+            },
+            
+            fire() {
+                if (this.fireT > 0) return; // Cooldown activo
+                
+                this.fireT = this.rapidFire ? 0.08 : this.data.fireRate;
+                
+                if (this.spreadShot) {
+                    this.el.sceneEl.emit('spawnBullet', { spread: true });
+                } else {
+                    this.el.sceneEl.emit('spawnBullet', { spread: false });
+                }
             },
             
             activatePowerup(type, duration = 8) {
@@ -545,7 +588,6 @@
                     this.el.querySelector('#playerShip').setAttribute('material', 'color', '#00ffff');
                 } else if (type === 'rapidfire') {
                     this.rapidFire = true;
-                    this.data.autoFireRate = 0.08;
                 } else if (type === 'spread') {
                     this.spreadShot = true;
                 }
@@ -553,6 +595,12 @@
             tick(time, dt) {
                 const d = dt / 1000;
                 const pos = this.el.object3D.position;
+                
+                // Cooldown de disparo
+                if (this.fireT > 0) {
+                    this.fireT -= d;
+                }
+                
                 // Powerup timer
                 if (this.powerupTimer > 0) {
                     this.powerupTimer -= d;
@@ -560,7 +608,6 @@
                         this.shield = false;
                         this.rapidFire = false;
                         this.spreadShot = false;
-                        this.data.autoFireRate = 0.18;
                         this.el.querySelector('#playerShip').setAttribute('material', 'color', '#56ccf2');
                     }
                 }
@@ -576,17 +623,6 @@
 
                 pos.x = clamp(pos.x + mx * this.data.strafe * d, -this.data.boundsX, this.data.boundsX);
                 pos.y = clamp(pos.y + my * this.data.strafe * d, 0.6, this.data.boundsY);
-
-                // auto-disparo
-                this.fireT -= d;
-                if (this.fireT <= 0) {
-                    this.fireT = this.data.autoFireRate;
-                    if (this.spreadShot) {
-                        this.el.sceneEl.emit('spawnBullet', { spread: true });
-                    } else {
-                        this.el.sceneEl.emit('spawnBullet', { spread: false });
-                    }
-                }
             }
         });
 
@@ -674,6 +710,9 @@
                 this.comboTimer = 0;
                 this.kills = 0;
                 this.gameOver = false;
+                this.enemiesInWave = 0;
+                this.enemiesKilledInWave = 0;
+                this.waveCompleteCheckTimer = 0;
 
                 this.playerRigEl = document.querySelector('#playerRig');
                 this.player = this.playerRigEl.object3D;
@@ -721,6 +760,7 @@
             
             onEnemyDied(detail) {
                 this.kills++;
+                this.enemiesKilledInWave++;
                 this.combo++;
                 this.comboTimer = 2.0;
                 const comboBonus = Math.floor(this.combo / 5);
@@ -736,6 +776,11 @@
                 }
                 
                 this.updateHUD();
+                
+                // Verificar si se completó la oleada
+                if (this.enemiesKilledInWave >= this.enemiesInWave && this.enemiesInWave > 0) {
+                    this.waveCompleteCheckTimer = 3.0; // Esperar 3 segundos antes de avanzar
+                }
             },
             
             getPlayerController() {
@@ -795,8 +840,16 @@
             
             nextWave() {
                 this.wave++;
+                this.enemiesKilledInWave = 0;
+                this.enemiesInWave = 0;
                 this.showWaveMessage(`WAVE ${this.wave}`);
                 this.updateHUD();
+                
+                // Reactivar el spawner
+                const spawner = document.querySelector('[enemy-spawner]');
+                if (spawner && spawner.components['enemy-spawner']) {
+                    spawner.components['enemy-spawner'].paused = false;
+                }
                 
                 // Cada 3 ondas, spawn un boss
                 if (this.wave % 3 === 0) {
@@ -811,9 +864,14 @@
                 
                 const pz = this.player.position.z - 60;
                 const b = document.createElement('a-entity');
-                b.setAttribute('gltf-model', '#sceneModel');
-                b.setAttribute('gltf-part', 'name: Nave');
+                
+                // Boss usa un alien aleatorio pero más grande
+                const alienModels = ['#alien1Model', '#alien2Model', '#alien3Model'];
+                const randomAlien = alienModels[Math.floor(Math.random() * alienModels.length)];
+                
+                b.setAttribute('gltf-model', randomAlien);
                 b.setAttribute('scale', '1.4 1.4 1.4');
+                b.setAttribute('rotation', '0 180 0');
                 b.setAttribute('position', `0 2.5 ${pz}`);
                 b.setAttribute('boss', `hp: ${30 + this.wave * 10}`);
                 this.enemiesEl.appendChild(b);
@@ -842,8 +900,30 @@
             
             endGame() {
                 this.gameOver = true;
+                
+                // Generar explosión de la nave
+                const playerPos = this.player.position;
+                spawnExplosion(this.el.sceneEl, playerPos.x, playerPos.y, playerPos.z, '#ff0000');
+                
+                // Explosiones adicionales para efecto dramático
+                for (let i = 0; i < 4; i++) {
+                    setTimeout(() => {
+                        spawnExplosion(this.el.sceneEl, 
+                            playerPos.x + (Math.random() - 0.5) * 2, 
+                            playerPos.y + (Math.random() - 0.5) * 1.5, 
+                            playerPos.z + (Math.random() - 0.5) * 2, 
+                            '#ff8800');
+                    }, i * 150);
+                }
+                
+                // Ocultar la nave después de la explosión
+                setTimeout(() => {
+                    const playerShip = document.querySelector('#playerShip');
+                    if (playerShip) playerShip.setAttribute('visible', 'false');
+                }, 500);
+                
                 this.hudEl.setAttribute('value', `GAME OVER | Score: ${this.score} | Press R to Restart`);
-                document.querySelector('#playerRig').setAttribute('player-controller', 'speed: 0; autoFireRate: 999');
+                document.querySelector('#playerRig').setAttribute('player-controller', 'speed: 0; fireRate: 999');
                 
                 // Parar spawner
                 const spawner = document.querySelector('[enemy-spawner]');
@@ -869,6 +949,23 @@
                     this.powerupSpawnTimer = 12 + Math.random() * 8;
                     this.spawnPowerup();
                 }
+                
+                // Wave complete check timer
+                if (this.waveCompleteCheckTimer > 0) {
+                    this.waveCompleteCheckTimer -= d;
+                    if (this.waveCompleteCheckTimer <= 0) {
+                        // Verificar si realmente no hay enemigos
+                        const remainingEnemies = Array.from(this.enemiesEl.children).length;
+                        if (remainingEnemies === 0 && !this.bossActive) {
+                            // Pausar el spawner
+                            const spawner = document.querySelector('[enemy-spawner]');
+                            if (spawner && spawner.components['enemy-spawner']) {
+                                spawner.components['enemy-spawner'].paused = true;
+                            }
+                            this.nextWave();
+                        }
+                    }
+                }
 
                 // Colisiones: balas jugador vs enemigos (incluido boss)
                 const enemies = Array.from(this.enemiesEl.children);
@@ -892,6 +989,35 @@
                             }
                             break;
                         }
+                    }
+                }
+                
+                // Colisiones: enemigos vs jugador (perder vida al chocar)
+                const playerPos = this.player.position;
+                const pc = this.getPlayerController();
+                for (const e of enemies) {
+                    if (!e.object3D) continue;
+                    const ep = e.object3D.position;
+                    const collisionDist = e.components['boss'] ? 2.5 : 1.2;
+                    if (dist(playerPos, ep) < collisionDist) {
+                        // Si tiene shield, absorbe el impacto
+                        if (pc && pc.shield) {
+                            pc.shield = false;
+                            pc.powerupTimer = 0;
+                            safeRemove(e);
+                            continue;
+                        }
+                        
+                        // Perder vida
+                        this.hp -= 1;
+                        this.updateHUD();
+                        safeRemove(e);
+                        
+                        // Verificar game over
+                        if (this.hp <= 0) {
+                            this.endGame();
+                        }
+                        break;
                     }
                 }
                 // Balas enemigas se manejan via enemy-bullet + evento enemyHitPlayer -> onPlayerHit
