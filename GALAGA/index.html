@@ -5,6 +5,80 @@
     <meta charset="utf-8" />
     <title>Galaga 3D - A-Frame MVP</title>
     <script src="https://aframe.io/releases/1.5.0/aframe.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+        /* Retro score box overlay */
+        #score-box {
+            position: fixed;
+            top: 16px;
+            left: 16px;
+            width: 300px;
+            padding: 12px 14px;
+            color: #00ffea;
+            font-family: 'Press Start 2P', monospace;
+            font-size: 11px;
+            letter-spacing: 1px;
+            background: linear-gradient(180deg, rgba(6,6,12,0.85) 0%, rgba(10,8,20,0.75) 100%);
+            border: 2px solid rgba(0,255,234,0.12);
+            border-radius: 10px;
+            box-shadow: 0 6px 18px rgba(0,255,234,0.06), 0 0 18px rgba(0,255,234,0.06) inset;
+            backdrop-filter: blur(2px);
+            z-index: 9999;
+            -webkit-user-select: none;
+            user-select: none;
+        }
+        #score-box:before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            border-radius: 8px;
+            pointer-events: none;
+            background-image: repeating-linear-gradient(transparent 0 4px, rgba(255,255,255,0.02) 4px 5px);
+        }
+        #score-box .score-row { display: flex; justify-content: space-between; align-items: center; }
+        #score-box .score-label { color: #77ffef; opacity: 0.9; font-size: 9px; }
+        #score-box .score-value { color: #fffb7d; font-size: 18px; line-height: 1; margin-left: 8px; text-shadow: 0 0 8px rgba(255,255,125,0.35); }
+        #score-box .hp { color: #ff6b6b; }
+        #score-box .wave { color: #9af; }
+        /* Neon pulse when score increases */
+        @keyframes neonPulse {
+            0% { box-shadow: 0 0 6px rgba(255,255,125,0.15), 0 0 18px rgba(0,255,234,0.05) inset; transform: scale(1); }
+            40% { box-shadow: 0 0 18px rgba(255,255,125,0.45), 0 0 34px rgba(0,255,234,0.12) inset; transform: scale(1.02); }
+            100% { box-shadow: 0 6px 18px rgba(0,0,0,0.35); transform: scale(1); }
+        }
+        .pulse {
+            animation: neonPulse 520ms ease-out;
+        }
+        /* subtle scanline flicker */
+        @keyframes scanFlicker { 0% {opacity:0.96} 50% {opacity:0.88} 100% {opacity:0.96} }
+        #score-box:after { content: ""; position:absolute; inset:0; border-radius:10px; mix-blend-mode:overlay; animation: scanFlicker 2.2s infinite; pointer-events:none; }
+        /* Center banner for start / wave / game over messages */
+        #center-banner {
+            position: fixed;
+            left: 50%;
+            top: 34%;
+            transform: translateX(-50%);
+            min-width: 480px;
+            max-width: 90%;
+            padding: 22px 28px;
+            background: linear-gradient(180deg, rgba(0,0,0,0.6), rgba(8,6,16,0.65));
+            border: 3px solid rgba(255,255,255,0.06);
+            border-radius: 14px;
+            text-align: center;
+            z-index: 10000;
+            pointer-events: none;
+            display: none;
+        }
+        #center-banner.show { display: block; pointer-events: auto; }
+        #center-banner .title { font-family: 'Press Start 2P', monospace; font-size: 28px; color: #ffd86b; text-shadow: 0 0 12px rgba(255,200,80,0.25); }
+        /* Score larger on game over */
+        #center-banner .subtitle { margin-top: 10px; font-family: 'Press Start 2P', monospace; font-size: 18px; color: #9ff; opacity: 0.98; }
+        /* Make the restart hint a bit bigger */
+        #center-banner .restart { margin-top: 14px; font-size: 14px; color: #ffdf7d; opacity: 0.98; }
+        /* entrance animation */
+        @keyframes bannerIn { 0% { transform: translate(-50%, -8%) scale(0.98); opacity: 0 } 60% { transform: translate(-50%,0%) scale(1.01); opacity: 1 } 100% { transform: translate(-50%,0) scale(1); } }
+        #center-banner.show { animation: bannerIn 480ms cubic-bezier(.2,.9,.2,1); }
+    </style>
 </head>
 
 <body>
@@ -43,9 +117,9 @@
             <a-entity id="cam" camera look-controls="enabled: false" position="0 1.2 3.2"
                 rotation="-10 0 0">
                 <!-- HUD fijado a la cámara: siempre visible -->
-                <a-text id="hud" value="HP: 3   Score: 0   Wave: 1" position="-0.85 0.45 -1.2" width="2.4" color="#0ff" font="monoid"></a-text>
-                <a-text id="combo-hud" value="" position="0 0.35 -1.2" width="1.8" color="#ff0" align="center"></a-text>
-                <a-text id="wave-message" value="" position="0 0.05 -1.2" width="3" color="#0f0" align="center"></a-text>
+                <a-text id="hud" value="HP: 3   Score: 0   Wave: 1" position="-0.85 0.45 -1.2" width="2.4" color="#0ff" font="monoid" visible="false"></a-text>
+                <a-text id="combo-hud" value="" position="0 0.35 -1.2" width="1.8" color="#ff0" align="center" visible="false"></a-text>
+                <a-text id="wave-message" value="" position="0 0.05 -1.2" width="3" color="#0f0" align="center" visible="false"></a-text>
             </a-entity>
         </a-entity>
 
@@ -348,7 +422,8 @@
                 if (!this.spawnedInitial) {
                     this.spawnedInitial = true;
                     this.spawnWave();
-                    this.paused = true; // Pausar después de la primera oleada
+                    // Iniciar el juego sin pausar: permitir que el spawner siga activo
+                    this.paused = false;
                     return;
                 }
                 
@@ -727,6 +802,15 @@
                 this.hudEl = document.querySelector('#hud');
                 this.comboHudEl = document.querySelector('#combo-hud');
                 this.waveMessageEl = document.querySelector('#wave-message');
+                // Center banner overlay element (HTML)
+                this.centerBannerEl = document.querySelector('#center-banner');
+
+                // HTML overlay score box (retro)
+                this.lastScore = 0;
+                this.scoreBoxEl = document.querySelector('#score-box');
+                this.scoreHpEl = document.querySelector('#score-hp');
+                this.scoreValueEl = document.querySelector('#score-value');
+                this.scoreWaveEl = document.querySelector('#score-wave');
 
                 this.powerupSpawnTimer = 15; // First powerup after 15 segs
                 this.bossActive = false;
@@ -836,10 +920,15 @@
             },
             
             showWaveMessage(msg) {
+                // Prefer HTML center banner if present
+                if (this.centerBannerEl) {
+                    this.centerBannerEl.innerHTML = `<div class="title">${msg}</div>`;
+                    this.centerBannerEl.classList.add('show');
+                    setTimeout(() => { this.centerBannerEl.classList.remove('show'); }, 2800);
+                    return;
+                }
                 this.waveMessageEl.setAttribute('value', msg);
-                setTimeout(() => {
-                    this.waveMessageEl.setAttribute('value', '');
-                }, 3000);
+                setTimeout(() => { this.waveMessageEl.setAttribute('value', ''); }, 3000);
             },
             
             nextWave() {
@@ -926,12 +1015,21 @@
                     if (playerShip) playerShip.setAttribute('visible', 'false');
                 }, 500);
                 
-                this.hudEl.setAttribute('value', `GAME OVER | Score: ${this.score} | Press R to Restart`);
-                document.querySelector('#playerRig').setAttribute('player-controller', 'speed: 0; fireRate: 999');
-                
-                // Parar spawner
+                // Show center banner with nicer design for game over / restart
+                if (this.centerBannerEl) {
+                    this.centerBannerEl.innerHTML = `<div class="title">GAME OVER</div><div class="title">Score: ${this.score}</div><div class="title">Press R to Restart</div>`;
+                    this.centerBannerEl.classList.add('show');
+                } else {
+                    this.hudEl.setAttribute('value', `GAME OVER | Score: ${this.score} | Press R to Restart`);
+                }
+                // stop player input and firing
+                const pr = document.querySelector('#playerRig');
+                if (pr) pr.setAttribute('player-controller', 'speed: 0; fireRate: 999');
+                // Try to pause spawner component safely
                 const spawner = document.querySelector('[enemy-spawner]');
-                if (spawner) spawner.pause();
+                if (spawner && spawner.components && spawner.components['enemy-spawner']) {
+                    spawner.components['enemy-spawner'].paused = true;
+                }
             },
 
             tick(time, dt) {
@@ -1029,6 +1127,26 @@
 
             updateHUD() {
                 this.hudEl.setAttribute('value', `HP: ${this.hp}   Score: ${this.score}   Wave: ${this.wave}`);
+
+                // Update HTML overlay if present
+                try {
+                    if (this.scoreBoxEl) {
+                        // simple pulse animation when score increases
+                        const delta = this.score - (this.lastScore || 0);
+                        if (this.scoreHpEl) this.scoreHpEl.textContent = String(this.hp);
+                        if (this.scoreValueEl) this.scoreValueEl.textContent = String(this.score);
+                        if (this.scoreWaveEl) this.scoreWaveEl.textContent = String(this.wave);
+
+                        if (delta > 0) {
+                            this.scoreBoxEl.classList.remove('pulse');
+                            // trigger reflow to restart animation
+                            void this.scoreBoxEl.offsetWidth;
+                            this.scoreBoxEl.classList.add('pulse');
+                            setTimeout(() => { this.scoreBoxEl.classList.remove('pulse'); }, 700);
+                        }
+                        this.lastScore = this.score;
+                    }
+                } catch(e) { /* ignore DOM errors in non-browser env */ }
             },
 
             spawnBullet(detail) {
@@ -1056,6 +1174,25 @@
             }
         });
     </script>
+    <!-- Retro HTML overlay score box -->
+    <div id="score-box" aria-live="polite">
+        <div class="score-row">
+            <div class="score-label">HP</div>
+            <div class="score-value hp" id="score-hp">3</div>
+        </div>
+        <div style="height:8px"></div>
+        <div class="score-row">
+            <div class="score-label">SCORE</div>
+            <div class="score-value" id="score-value">0</div>
+        </div>
+        <div style="height:8px"></div>
+        <div class="score-row">
+            <div class="score-label">WAVE</div>
+            <div class="score-value wave" id="score-wave">1</div>
+        </div>
+    </div>
+    <!-- Center banner for start / wave / gameover messages -->
+    <div id="center-banner" role="status" aria-atomic="true"></div>
 </body>
 
 </html>
