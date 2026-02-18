@@ -100,9 +100,10 @@
         <!-- SKY: imagen 360 equirectangular -->
         <a-sky src="#skyImage" rotation="0 90 0"></a-sky>
 
-        <!-- “TUNEL” / REFERENCIAS VISUALES -->
+        <!-- "TUNEL" / REFERENCIAS VISUALES -->
         <a-entity id="lane">
-            <a-plane rotation="-90 0 0" width="40" height="400" position="0 0 -160" material="shader: flat; src: #stelaImage; side: double"></a-plane>
+            <a-plane id="lane-plane-a" rotation="-90 0 0" width="40" height="400" position="0 0 -160" material="shader: flat; src: #stelaImage; side: double"></a-plane>
+            <a-plane id="lane-plane-b" rotation="-90 0 0" width="40" height="400" position="0 0 -560" material="shader: flat; src: #stelaImage; side: double"></a-plane>
             <a-entity id="stars"></a-entity>
         </a-entity>
 
@@ -244,7 +245,7 @@
                 if (this.playerEl) {
                     this.patrolOffsetZ = p.z - this.playerEl.object3D.position.z;
                 } else {
-                    this.patrolOffsetZ = -70;
+                    this.patrolOffsetZ = -30;
                 }
 
                 this.homeX = p.x;
@@ -344,7 +345,7 @@
 
                     // Acercar lentamente para crear presion
                     this.patrolOffsetZ += 1.0 * d;
-                    if (this.patrolOffsetZ > -8) this.patrolOffsetZ = -8;
+                    if (this.patrolOffsetZ > -5) this.patrolOffsetZ = -5;
 
                     // Probabilidad de ataque
                     if (p && Math.random() < this.data.attackChancePerSec * d) {
@@ -371,7 +372,7 @@
                         if (obj.position.z >= p.z + 1.5) {
                             this.attackPhase = "retreat";
                             // Nuevo offset de patrulla (volver lejos delante del jugador)
-                            this.patrolOffsetZ = -(35 + Math.random() * 25);
+                            this.patrolOffsetZ = -(18 + Math.random() * 12);
                             this.homeX = (Math.random() * 12) - 6;
                             this.homeY = 1.2 + Math.random() * 2.2;
                         }
@@ -415,8 +416,8 @@
                 subWavesPerWave: { default: 3 }, // cuántas sub-oleadas por wave
 
                 // Distancia delante del jugador para spawn
-                aheadMin: { default: 50 },
-                aheadMax: { default: 75 }
+                aheadMin: { default: 25 },
+                aheadMax: { default: 40 }
             },
 
             init() {
@@ -647,6 +648,53 @@
             }
         }
 
+        // ---------- Infinite Lane ----------
+        // Dos planos que se alternan: cuando uno queda atras del jugador, salta adelante del otro
+        (function setupInfiniteLane() {
+            const SEG = 400; // largo de cada plano
+
+            function initPlanes() {
+                const playerEl = document.querySelector('#playerRig');
+                const planeA = document.querySelector('#lane-plane-a');
+                const planeB = document.querySelector('#lane-plane-b');
+                if (!playerEl || !planeA || !planeB) {
+                    setTimeout(initPlanes, 200);
+                    return;
+                }
+
+                // Posiciones absolutas de cada plano (centro del plano)
+                // Plano empieza en z=0 hasta z=-400, centro en z=-200 en espacio mundo
+                // Pero como el lane entity está en 0, usamos posiciones locales directamente
+                // Plano A: cubre de z=-360 a z=40 (centro -160)
+                // Plano B: cubre de z=-760 a z=-360 (centro -560)
+                // El jugador empieza en z=0 y va hacia -Z
+
+                function tick() {
+                    const pz = playerEl.object3D.position.z;
+
+                    // Borde trasero de cada plano = centro + SEG/2
+                    const aZ = planeA.object3D.position.z;
+                    const bZ = planeB.object3D.position.z;
+
+                    // Si el plano A quedó más de SEG/2 detrás del jugador, saltar adelante del B
+                    if (aZ - pz > SEG * 0.5) {
+                        // El plano más adelantado es B, A salta adelante de B
+                        planeA.object3D.position.z = Math.min(aZ, bZ) - SEG;
+                    }
+                    // Si el plano B quedó más de SEG/2 detrás del jugador, saltar adelante del A
+                    if (bZ - pz > SEG * 0.5) {
+                        planeB.object3D.position.z = Math.min(aZ, bZ) - SEG;
+                    }
+
+                    requestAnimationFrame(tick);
+                }
+                tick();
+            }
+
+            // Esperar a que la escena esté lista
+            document.querySelector('a-scene').addEventListener('loaded', initPlanes);
+        })();
+
         // ---------- Player Controller ----------
         AFRAME.registerComponent('player-controller', {
             schema: {
@@ -854,15 +902,17 @@
 
                 // estrellas mejoradas (decoración)
                 const stars = document.querySelector('#stars');
+                this.starData = [];
                 for (let i = 0; i < 200; i++) {
                     const s = document.createElement('a-sphere');
                     s.setAttribute('radius', 0.02 + Math.random() * 0.04);
                     s.setAttribute('material', 'color: #ffffff; opacity: ' + (0.5 + Math.random() * 0.5));
                     const x = (Math.random() * 80) - 40;
                     const y = (Math.random() * 30) + 1;
-                    const z = (Math.random() * -500);
-                    s.setAttribute('position', `${x} ${y} ${z}`);
+                    const zOffset = -(Math.random() * 200); // offset relativo al jugador
+                    s.setAttribute('position', `${x} ${y} ${zOffset}`);
                     stars.appendChild(s);
+                    this.starData.push({ el: s, x, y, zOffset });
                 }
 
                 // eventos
@@ -1092,6 +1142,22 @@
             tick(time, dt) {
                 if (this.gameOver) return;
                 const d = dt / 1000;
+
+                // Mover estrellas para que sigan al jugador (escenario infinito)
+                if (this.starData && this.player) {
+                    const pz = this.player.position.z;
+                    const range = 200;
+                    for (const star of this.starData) {
+                        // Calcular posicion Z absoluta de la estrella
+                        let absZ = pz + star.zOffset;
+                        // Si la estrella quedo muy atras, moverla adelante
+                        if (absZ > pz + 20) {
+                            star.zOffset -= range;
+                            absZ = pz + star.zOffset;
+                        }
+                        star.el.object3D.position.z = absZ;
+                    }
+                }
 
                 // Combo timer
                 if (this.comboTimer > 0) {
