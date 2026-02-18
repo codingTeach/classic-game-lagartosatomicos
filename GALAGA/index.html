@@ -131,7 +131,7 @@
 
         <!-- Sistema de juego mejorado -->
         <a-entity game-manager></a-entity>
-        <a-entity enemy-spawner="playerSelector: #playerRig; containerSelector: #enemies; waveEvery: 8; enemiesPerWave: 6"></a-entity>
+        <a-entity enemy-spawner="playerSelector: #playerRig; containerSelector: #enemies; enemiesPerWave: 5; subWaveDelay: 3; subWavesPerWave: 3"></a-entity>
     </a-scene>
 
     <script>
@@ -210,45 +210,50 @@
                 hp: { default: 1 },
 
                 // Movimiento
-                approachSpeed: { default: 8 }, // hacia +Z
+                approachSpeed: { default: 8 },
                 patrolAmp: { default: 2.0 },
                 patrolFreq: { default: 2.2 },
 
                 // Ataque
-                attackChancePerSec: { default: 0.25 }, // probabilidad de iniciar ataque (por segundo)
+                attackChancePerSec: { default: 0.25 },
                 attackSpeed: { default: 16 },
-                retreatSpeed: { default: 12 },
+                retreatSpeed: { default: 18 },
 
                 // Disparo
-                fireRate: { default: 1.2 },     // seg
-                fireJitter: { default: 0.6 },   // random extra
+                fireRate: { default: 1.2 },
+                fireJitter: { default: 0.6 },
                 bulletSpeed: { default: 18 },
 
                 // Referencias / límites
                 playerSelector: { default: "#playerRig" },
                 boundsX: { default: 7 },
-                minZFromPlayer: { default: -90 }, // spawns típicos
-                despawnBehind: { default: 10 },   // si pasa al jugador por mucho
+                despawnBehind: { default: 15 },
             },
 
             init() {
                 this.state = "entry";
                 this.t = Math.random() * 999;
                 this.fireT = 0.4 + Math.random() * 0.8;
-                this.currentHP = this.data.hp; // Track HP separately
+                this.currentHP = this.data.hp;
                 this.playerEl = this.el.sceneEl.querySelector(this.data.playerSelector)
                     || this.el.sceneEl.querySelector("#playerShip");
 
-                // Para animar entrada: punto “home” al que quiere llegar
                 const p = this.el.object3D.position;
-                this.home = { x: p.x, y: p.y, z: p.z };
 
-                // inicio entry desde un poco más lejos y arriba
+                // Guardar offset relativo al jugador
+                if (this.playerEl) {
+                    this.patrolOffsetZ = p.z - this.playerEl.object3D.position.z;
+                } else {
+                    this.patrolOffsetZ = -70;
+                }
+
+                this.homeX = p.x;
+                this.homeY = p.y;
+
+                // Inicio entry: push back and up
                 p.y += 2 + Math.random() * 1.5;
                 p.z -= 12 + Math.random() * 10;
 
-                // Colisión con balas de jugador (si tu juego emite "playerBulletHit")
-                // Alternativa: tu manager puede llamar el método takeDamage directamente.
                 this.el.addEventListener("takeDamage", (e) => {
                     const dmg = (e.detail && e.detail.damage) ? e.detail.damage : 1;
                     this.takeDamage(dmg);
@@ -279,7 +284,6 @@
                 b.setAttribute("position", `${o.x} ${o.y} ${o.z + 0.8}`);
                 b.setAttribute("enemy-bullet", `speed: ${this.data.bulletSpeed}; ttl: 3; radius: 0.2`);
 
-                // Si tienes un contenedor #bullets, lo usamos; si no, al scene.
                 const container = this.el.sceneEl.querySelector("#bullets") || this.el.sceneEl;
                 container.appendChild(b);
             },
@@ -289,101 +293,111 @@
                 const obj = this.el.object3D;
                 const p = this.playerEl ? this.playerEl.object3D.position : null;
 
-                // Disparo (solo si está relativamente cerca del “carril”)
+                // Disparo
                 this.fireT -= d;
                 if (this.fireT <= 0) {
                     this.fireT = this.data.fireRate + Math.random() * this.data.fireJitter;
-                    // Dispara si existe player y el enemigo no está demasiado lejos
-                    if (p && (obj.position.z - p.z) < 70) this.spawnBullet();
+                    if (p && Math.abs(obj.position.z - p.z) < 80) this.spawnBullet();
                 }
 
-                // Despawn si ya “rebasó” al jugador
+                // Despawn si rebaso al jugador - EMITIR EVENTO para tracking
                 if (p && obj.position.z > p.z + this.data.despawnBehind) {
+                    this.el.sceneEl.emit("enemyDespawned", { enemy: this.el });
                     safeRemove(this.el);
                     return;
                 }
 
-                // FSM
                 this.t += d;
 
+                // === ENTRY: Acercar al punto de patrulla ===
                 if (this.state === "entry") {
-                    // Se acerca al plano de juego con suavizado a home (x,y,z)
-                    obj.position.z += this.data.approachSpeed * d;
+                    if (p) {
+                        // Mover hacia la posicion de patrulla relativa al jugador
+                        const targetZ = p.z + this.patrolOffsetZ;
+                        obj.position.z += (targetZ - obj.position.z) * d * 1.8;
+                        obj.position.x += (this.homeX - obj.position.x) * d * 2.2;
+                        obj.position.y += (this.homeY - obj.position.y) * d * 2.2;
 
-                    // Lerp hacia home en X/Y
-                    obj.position.x += (this.home.x - obj.position.x) * (d * 2.2);
-                    obj.position.y += (this.home.y - obj.position.y) * (d * 2.2);
-
-                    // Cuando llega “cerca” de la homeZ, pasa a patrol
-                    if (obj.position.z >= this.home.z - 0.5) {
-                        this.state = "patrol";
-                        this.entryBaseX = obj.position.x;
-                        this.entryBaseY = obj.position.y;
+                        if (Math.abs(obj.position.z - targetZ) < 3.0) {
+                            this.state = "patrol";
+                            this.entryBaseX = obj.position.x;
+                            this.entryBaseY = obj.position.y;
+                        }
+                    } else {
+                        obj.position.z += this.data.approachSpeed * d;
                     }
                     return;
                 }
 
+                // === PATROL: Mantener distancia relativa al jugador ===
                 if (this.state === "patrol") {
-                    // Patrulla en X con seno, y avanza lentamente para presión
+                    if (!p) return;
+
+                    // Seguir al jugador manteniendo el offset
+                    const targetZ = p.z + this.patrolOffsetZ;
+                    obj.position.z += (targetZ - obj.position.z) * d * 2.5;
+
+                    // Oscilar en X
                     const wave = Math.sin(this.t * this.data.patrolFreq) * this.data.patrolAmp;
                     obj.position.x = this.entryBaseX + wave;
                     obj.position.x = Math.max(-this.data.boundsX, Math.min(this.data.boundsX, obj.position.x));
 
-                    obj.position.z += (this.data.approachSpeed * 0.55) * d;
+                    // Acercar lentamente para crear presion
+                    this.patrolOffsetZ += 1.0 * d;
+                    if (this.patrolOffsetZ > -8) this.patrolOffsetZ = -8;
 
-                    // Probabilidad de ataque por segundo
+                    // Probabilidad de ataque
                     if (p && Math.random() < this.data.attackChancePerSec * d) {
                         this.state = "attack";
                         this.attackTargetX = p.x;
                         this.attackTargetY = p.y;
-                        this.attackStartZ = obj.position.z;
                         this.attackPhase = "dive";
                     }
                     return;
                 }
 
+                // === ATTACK ===
                 if (this.state === "attack") {
                     if (!p) {
                         this.state = "patrol";
                         return;
                     }
 
-                    // Fase dive: persigue X/Y y se lanza en +Z rápido
                     if (this.attackPhase === "dive") {
-                        obj.position.x += (this.attackTargetX - obj.position.x) * (d * 3.0);
-                        obj.position.y += (this.attackTargetY - obj.position.y) * (d * 3.0);
+                        obj.position.x += (this.attackTargetX - obj.position.x) * d * 3.0;
+                        obj.position.y += (this.attackTargetY - obj.position.y) * d * 3.0;
                         obj.position.z += this.data.attackSpeed * d;
 
-                        // Si ya llegó al jugador (o lo pasó), cambia a retreat
                         if (obj.position.z >= p.z + 1.5) {
                             this.attackPhase = "retreat";
-                            // vuelve a un “home” nuevo (re-entra)
-                            this.home = {
-                                x: (Math.random() * 12) - 6,
-                                y: 1.2 + Math.random() * 2.2,
-                                z: p.z - (60 + Math.random() * 25)
-                            };
+                            // Nuevo offset de patrulla (volver lejos delante del jugador)
+                            this.patrolOffsetZ = -(35 + Math.random() * 25);
+                            this.homeX = (Math.random() * 12) - 6;
+                            this.homeY = 1.2 + Math.random() * 2.2;
                         }
                         return;
                     }
 
-                    // Fase retreat: se va “adelante” otra vez para re-formar
                     if (this.attackPhase === "retreat") {
-                        // En retreat realmente queremos ir hacia -Z (adelante del jugador),
-                        // porque el jugador va hacia -Z. Así que restamos Z.
-                        obj.position.z -= this.data.retreatSpeed * d;
+                        // Ir hacia posicion RELATIVA al jugador actual
+                        const targetZ = p.z + this.patrolOffsetZ;
+                        const diffZ = targetZ - obj.position.z;
 
-                        obj.position.x += (this.home.x - obj.position.x) * (d * 1.8);
-                        obj.position.y += (this.home.y - obj.position.y) * (d * 1.8);
+                        // Mover hacia el objetivo a velocidad de retreat
+                        obj.position.z += Math.sign(diffZ) * Math.min(Math.abs(diffZ), this.data.retreatSpeed * d);
+                        obj.position.x += (this.homeX - obj.position.x) * d * 1.8;
+                        obj.position.y += (this.homeY - obj.position.y) * d * 1.8;
 
-                        // cuando ya está suficientemente adelante, vuelve a entry->patrol
-                        if (obj.position.z <= this.home.z) {
+                        // Cuando esta cerca del objetivo, volver a entry
+                        if (Math.abs(diffZ) < 4.0) {
                             this.state = "entry";
                         }
                     }
                 }
             }
         });
+
+
 
 
         /** =========================
@@ -396,43 +410,62 @@
                 playerSelector: { default: "#playerRig" },
                 containerSelector: { default: "#enemies" },
 
-                waveEvery: { default: 1.1 },  // seg
                 enemiesPerWave: { default: 5 },
+                subWaveDelay: { default: 3.0 }, // seg entre sub-oleadas dentro de un wave
+                subWavesPerWave: { default: 3 }, // cuántas sub-oleadas por wave
 
                 // Distancia delante del jugador para spawn
-                aheadMin: { default: 70 },
-                aheadMax: { default: 95 }
+                aheadMin: { default: 50 },
+                aheadMax: { default: 75 }
             },
 
             init() {
-                this.t = this.data.waveEvery; // Iniciar con el timer lleno
                 this.playerEl = this.el.sceneEl.querySelector(this.data.playerSelector)
                     || this.el.sceneEl.querySelector("#playerShip");
                 this.container = this.el.sceneEl.querySelector(this.data.containerSelector) || this.el.sceneEl;
 
                 this.waveIndex = 0;
+                this.paused = true; // Empieza pausado, game-manager lo activa
+                this.subWaveCount = 0; // sub-oleadas generadas en el wave actual
+                this.subWaveTimer = 0;
+                this.maxSubWaves = this.data.subWavesPerWave;
+                this.waveStarted = false;
+            },
+
+            /** Llamado por game-manager para iniciar una oleada */
+            startWave(waveNum) {
                 this.paused = false;
-                this.spawnedInitial = false;
+                this.subWaveCount = 0;
+                this.subWaveTimer = 0.5; // pequeño delay antes de la primera sub-oleada
+                // Más sub-oleadas y enemigos en oleadas avanzadas
+                this.maxSubWaves = this.data.subWavesPerWave + Math.floor((waveNum - 1) / 2);
+                this.maxSubWaves = Math.min(this.maxSubWaves, 8); // tope
+                this.waveStarted = true;
+            },
+
+            /** Devuelve el total de enemigos que se generarán en esta oleada */
+            getWaveEnemyCount(waveNum) {
+                const subWaves = Math.min(this.data.subWavesPerWave + Math.floor((waveNum - 1) / 2), 8);
+                const perSub = this.data.enemiesPerWave + Math.floor((waveNum - 1) * 0.5);
+                return subWaves * Math.min(perSub, 10);
             },
 
             tick(time, dt) {
-                if (this.paused) return; // No generar enemigos si está pausado
-                
-                // Generar la primera oleada inmediatamente
-                if (!this.spawnedInitial) {
-                    this.spawnedInitial = true;
-                    this.spawnWave();
-                    // Iniciar el juego sin pausar: permitir que el spawner siga activo
-                    this.paused = false;
-                    return;
-                }
-                
-                const d = dt / 1000;
-                this.t -= d;
-                if (this.t > 0) return;
+                if (this.paused || !this.waveStarted) return;
 
-                this.t = this.data.waveEvery;
-                this.spawnWave();
+                const d = dt / 1000;
+                this.subWaveTimer -= d;
+                if (this.subWaveTimer > 0) return;
+
+                if (this.subWaveCount < this.maxSubWaves) {
+                    this.spawnWave();
+                    this.subWaveCount++;
+                    this.subWaveTimer = this.data.subWaveDelay;
+                } else {
+                    // Todas las sub-oleadas generadas, pausar spawner
+                    this.paused = true;
+                    this.waveStarted = false;
+                }
             },
 
             spawnEnemyAt(x, y, z, opts = {}) {
@@ -469,17 +502,11 @@
 
                 const pz = this.playerEl.object3D.position.z;
                 const ahead = this.data.aheadMin + Math.random() * (this.data.aheadMax - this.data.aheadMin);
-                const baseZ = pz - ahead; // adelante del jugador (más negativo)
+                const baseZ = pz - ahead;
 
                 // Alterna tipos de formación
                 const mode = this.waveIndex % 3;
                 this.waveIndex++;
-                
-                // Notificar al game manager que se está generando una oleada
-                const gameManager = this.el.sceneEl.querySelector('[game-manager]');
-                if (gameManager && gameManager.components['game-manager']) {
-                    gameManager.components['game-manager'].enemiesInWave += this.data.enemiesPerWave;
-                }
 
                 if (mode === 0) {
                     // V formation con más espacio
@@ -646,9 +673,19 @@
                     }
                 });
                 window.addEventListener('keyup', (e) => this.keys[e.code] = false);
-            },
-            
-            fire() {
+            },nextWave() {
+                this.wave++;
+                this.showWaveMessage(`WAVE ${this.wave}`);
+                this.updateHUD();
+                
+                // Iniciar la siguiente oleada despues de un breve delay
+                setTimeout(() => this.startCurrentWave(), 2000);
+                
+                // Cada 3 ondas, spawn un boss
+                if (this.wave % 3 === 0) {
+                    setTimeout(() => this.spawnBoss(), 4000);
+                }
+            },fire() {
                 if (this.fireT > 0) return; // Cooldown activo
                 
                 this.fireT = this.rapidFire ? 0.08 : this.data.fireRate;
@@ -834,9 +871,17 @@
                 this.el.sceneEl.addEventListener('enemyHitPlayer', (e) => this.onPlayerHit(e.detail));
                 this.el.sceneEl.addEventListener('powerupCollected', (e) => this.onPowerupCollected(e.detail));
                 this.el.sceneEl.addEventListener('bossDied', (e) => this.onBossDied(e.detail));
+                this.el.sceneEl.addEventListener('enemyDespawned', (e) => this.onEnemyDespawned(e.detail));
                 
-                // Mostrar mensaje inicial
+                // Tracking de enemigos por oleada
+                this.waveEnemiesTotal = 0;
+                this.waveEnemiesGone = 0; // killed + despawned
+                this.waveCheckInterval = 0;
+                this.waveTransitioning = true; // evitar que el check dispare durante la transicion
+
+                // Mostrar mensaje inicial y comenzar wave 1
                 this.showWaveMessage('WAVE 1 - START!');
+                setTimeout(() => this.startCurrentWave(), 1500);
                 
                 // Agregar listener para reiniciar
                 window.addEventListener('keydown', (e) => {
@@ -865,10 +910,12 @@
                 
                 this.updateHUD();
                 
-                // Verificar si se completó la oleada
-                if (this.enemiesKilledInWave >= this.enemiesInWave && this.enemiesInWave > 0) {
-                    this.waveCompleteCheckTimer = 3.0; // Esperar 3 segundos antes de avanzar
-                }
+                // Tracking para wave completion
+                this.waveEnemiesGone++;
+            },
+
+            onEnemyDespawned(detail) {
+                this.waveEnemiesGone++;
             },
             
             getPlayerController() {
@@ -931,23 +978,33 @@
                 setTimeout(() => { this.waveMessageEl.setAttribute('value', ''); }, 3000);
             },
             
-            nextWave() {
-                this.wave++;
-                this.enemiesKilledInWave = 0;
-                this.enemiesInWave = 0;
-                this.showWaveMessage(`WAVE ${this.wave}`);
-                this.updateHUD();
-                
-                // Reactivar el spawner
+            startCurrentWave() {
+                this.waveEnemiesGone = 0;
+                this.waveTransitioning = false;
                 const spawner = document.querySelector('[enemy-spawner]');
                 if (spawner && spawner.components['enemy-spawner']) {
-                    spawner.components['enemy-spawner'].paused = false;
+                    const sp = spawner.components['enemy-spawner'];
+                    this.waveEnemiesTotal = sp.getWaveEnemyCount(this.wave);
+                    sp.startWave(this.wave);
                 }
+            },
+            
+            nextWave() {
+                // Bloquear inmediatamente para evitar re-triggers
+                this.waveTransitioning = true;
+                this.waveEnemiesGone = 0;
+                
+                this.wave++;
+                this.showWaveMessage(`WAVE ${this.wave}`);
+                this.updateHUD();
                 
                 // Cada 3 ondas, spawn un boss
                 if (this.wave % 3 === 0) {
                     setTimeout(() => this.spawnBoss(), 4000);
                 }
+                
+                // Iniciar la siguiente oleada despues de un delay
+                setTimeout(() => this.startCurrentWave(), 3000);
             },
             
             spawnBoss() {
@@ -1052,18 +1109,18 @@
                     this.spawnPowerup();
                 }
                 
-                // Wave complete check timer
-                if (this.waveCompleteCheckTimer > 0) {
-                    this.waveCompleteCheckTimer -= d;
-                    if (this.waveCompleteCheckTimer <= 0) {
-                        // Verificar si realmente no hay enemigos
+                // Wave completion check
+                if (!this.waveTransitioning) {
+                    this.waveCheckInterval -= d;
+                    if (this.waveCheckInterval <= 0) {
+                        this.waveCheckInterval = 2.0;
                         const remainingEnemies = Array.from(this.enemiesEl.children).length;
-                        if (remainingEnemies === 0 && !this.bossActive) {
-                            // Pausar el spawner
-                            const spawner = document.querySelector('[enemy-spawner]');
-                            if (spawner && spawner.components['enemy-spawner']) {
-                                spawner.components['enemy-spawner'].paused = true;
-                            }
+                        const spawnerEl = document.querySelector("[enemy-spawner]");
+                        const sp = spawnerEl && spawnerEl.components["enemy-spawner"];
+                        const spawnerDone = !sp || !sp.waveStarted;
+                        
+                        // Wave completa si: spawner termino de generar, no quedan enemigos, no hay boss
+                        if (spawnerDone && remainingEnemies === 0 && !this.bossActive && this.waveEnemiesGone > 0) {
                             this.nextWave();
                         }
                     }
