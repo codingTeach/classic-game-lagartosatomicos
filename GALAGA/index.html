@@ -78,7 +78,6 @@
         /* entrance animation */
         @keyframes bannerIn { 0% { transform: translate(-50%, -8%) scale(0.98); opacity: 0 } 60% { transform: translate(-50%,0%) scale(1.01); opacity: 1 } 100% { transform: translate(-50%,0) scale(1); } }
         #center-banner.show { animation: bannerIn 480ms cubic-bezier(.2,.9,.2,1); }
-        /* music plays automatically; no toggle button */
     </style>
 </head>
 
@@ -88,25 +87,28 @@
         <a-entity light="type: ambient; intensity: 0.6"></a-entity>
         <a-entity light="type: directional; intensity: 0.9" position="1 3 2"></a-entity>
 
-        <!-- Assets: modelos GLB locales y textura de cielo -->
+        <!-- Assets: modelos GLB locales, textura de cielo y sonidos -->
         <a-assets timeout="10000">
             <img id="skyImage" src="eso0932a.jpg" />
             <img id="stelaImage" src="stela.jpg" />
-            <!-- Coloca aquí tu archivo de audio 'the-synth-wars.mp3' en la carpeta GALAGA/ -->
-            <audio id="bgMusic" src="the-synth-wars.mp3" preload="auto"></audio>
             <a-asset-item id="sceneModel" src="playermodel.glb"></a-asset-item>
             <a-asset-item id="alien1Model" src="alien1.glb"></a-asset-item>
             <a-asset-item id="alien2Model" src="alien2.glb"></a-asset-item>
             <a-asset-item id="alien3Model" src="alien3.glb"></a-asset-item>
+            <!-- Sonidos (coloca los archivos en la carpeta del proyecto) -->
+            <audio id="sfx-shot" src="sfx_shot.wav" preload="auto"></audio>
+            <audio id="sfx-explosion" src="sfx_explosion.wav" preload="auto"></audio>
+            <audio id="sfx-powerup" src="sfx_powerup.wav" preload="auto"></audio>
+            <audio id="sfx-hit" src="sfx_hit.wav" preload="auto"></audio>
+            <audio id="music-loop" src="bgm_loop.mp3" preload="auto" loop></audio>
         </a-assets>
 
         <!-- SKY: imagen 360 equirectangular -->
         <a-sky src="#skyImage" rotation="0 90 0"></a-sky>
 
-        <!-- "TUNEL" / REFERENCIAS VISUALES -->
+        <!-- “TUNEL” / REFERENCIAS VISUALES -->
         <a-entity id="lane">
-            <a-plane id="lane-plane-a" rotation="-90 0 0" width="40" height="400" position="0 0 -160" material="shader: flat; src: #stelaImage; side: double"></a-plane>
-            <a-plane id="lane-plane-b" rotation="-90 0 0" width="40" height="400" position="0 0 -560" material="shader: flat; src: #stelaImage; side: double"></a-plane>
+            <a-plane rotation="-90 0 0" width="40" height="400" position="0 0 -160" material="shader: flat; src: #stelaImage; side: double"></a-plane>
             <a-entity id="stars"></a-entity>
         </a-entity>
 
@@ -136,6 +138,7 @@
         <!-- Sistema de juego mejorado -->
         <a-entity game-manager></a-entity>
         <a-entity enemy-spawner="playerSelector: #playerRig; containerSelector: #enemies; enemiesPerWave: 5; subWaveDelay: 3; subWavesPerWave: 3"></a-entity>
+        <a-entity sfx-manager></a-entity>
     </a-scene>
 
     <script>
@@ -162,6 +165,49 @@
                         node.visible = (node.name === targetName);
                     }
                 });
+            }
+        });
+
+        // ---------- SFX Manager (audio playback via HTMLAudio) ----------
+        AFRAME.registerComponent('sfx-manager', {
+            init() {
+                // Referencias a elementos <audio> en a-assets
+                this.sfx = {
+                    shot: document.getElementById('sfx-shot'),
+                    explosion: document.getElementById('sfx-explosion'),
+                    powerup: document.getElementById('sfx-powerup'),
+                    hit: document.getElementById('sfx-hit'),
+                    music: document.getElementById('music-loop')
+                };
+
+                this.play = (key) => {
+                    const el = this.sfx[key];
+                    if (!el) return;
+                    const src = el.src || el.getAttribute('src');
+                    if (!src) return;
+                    const a = new Audio(src);
+                    a.preload = 'auto';
+                    a.play().catch(() => {});
+                };
+
+                // Map game events to sounds
+                const scene = this.el.sceneEl;
+                scene.addEventListener('enemyDied', () => this.play('explosion'));
+                scene.addEventListener('spawnBullet', () => this.play('shot'));
+                scene.addEventListener('powerupCollected', () => this.play('powerup'));
+                scene.addEventListener('bossDied', () => this.play('explosion'));
+                scene.addEventListener('enemyHitPlayer', () => this.play('hit'));
+
+                // Start music on first user gesture (autoplay policies)
+                const startMusic = () => {
+                    if (this.sfx.music) {
+                        this.sfx.music.play().catch(() => {});
+                    }
+                    window.removeEventListener('click', startMusic);
+                    window.removeEventListener('keydown', startMusic);
+                };
+                window.addEventListener('click', startMusic);
+                window.addEventListener('keydown', startMusic);
             }
         });
 
@@ -248,7 +294,7 @@
                 if (this.playerEl) {
                     this.patrolOffsetZ = p.z - this.playerEl.object3D.position.z;
                 } else {
-                    this.patrolOffsetZ = -30;
+                    this.patrolOffsetZ = -70;
                 }
 
                 this.homeX = p.x;
@@ -348,7 +394,7 @@
 
                     // Acercar lentamente para crear presion
                     this.patrolOffsetZ += 1.0 * d;
-                    if (this.patrolOffsetZ > -5) this.patrolOffsetZ = -5;
+                    if (this.patrolOffsetZ > -8) this.patrolOffsetZ = -8;
 
                     // Probabilidad de ataque
                     if (p && Math.random() < this.data.attackChancePerSec * d) {
@@ -375,7 +421,7 @@
                         if (obj.position.z >= p.z + 1.5) {
                             this.attackPhase = "retreat";
                             // Nuevo offset de patrulla (volver lejos delante del jugador)
-                            this.patrolOffsetZ = -(18 + Math.random() * 12);
+                            this.patrolOffsetZ = -(35 + Math.random() * 25);
                             this.homeX = (Math.random() * 12) - 6;
                             this.homeY = 1.2 + Math.random() * 2.2;
                         }
@@ -419,8 +465,8 @@
                 subWavesPerWave: { default: 3 }, // cuántas sub-oleadas por wave
 
                 // Distancia delante del jugador para spawn
-                aheadMin: { default: 25 },
-                aheadMax: { default: 40 }
+                aheadMin: { default: 50 },
+                aheadMax: { default: 75 }
             },
 
             init() {
@@ -445,14 +491,13 @@
                 this.maxSubWaves = this.data.subWavesPerWave + Math.floor((waveNum - 1) / 2);
                 this.maxSubWaves = Math.min(this.maxSubWaves, 8); // tope
                 this.waveStarted = true;
-                try { document.dispatchEvent(new Event('spawner:resumed')); } catch(e) {}
             },
 
             /** Devuelve el total de enemigos que se generarán en esta oleada */
             getWaveEnemyCount(waveNum) {
                 const subWaves = Math.min(this.data.subWavesPerWave + Math.floor((waveNum - 1) / 2), 8);
                 const perSub = this.data.enemiesPerWave + Math.floor((waveNum - 1) * 0.5);
-                return subWaves * Math.min(perSub, 10);the-synth-wars
+                return subWaves * Math.min(perSub, 10);
             },
 
             tick(time, dt) {
@@ -470,7 +515,6 @@
                     // Todas las sub-oleadas generadas, pausar spawner
                     this.paused = true;
                     this.waveStarted = false;
-                    try { document.dispatchEvent(new Event('spawner:paused')); } catch(e) {}
                 }
             },
 
@@ -652,53 +696,6 @@
                 container.appendChild(p);
             }
         }
-
-        // ---------- Infinite Lane ----------
-        // Dos planos que se alternan: cuando uno queda atras del jugador, salta adelante del otro
-        (function setupInfiniteLane() {
-            const SEG = 400; // largo de cada plano
-
-            function initPlanes() {
-                const playerEl = document.querySelector('#playerRig');
-                const planeA = document.querySelector('#lane-plane-a');
-                const planeB = document.querySelector('#lane-plane-b');
-                if (!playerEl || !planeA || !planeB) {
-                    setTimeout(initPlanes, 200);
-                    return;
-                }
-
-                // Posiciones absolutas de cada plano (centro del plano)
-                // Plano empieza en z=0 hasta z=-400, centro en z=-200 en espacio mundo
-                // Pero como el lane entity está en 0, usamos posiciones locales directamente
-                // Plano A: cubre de z=-360 a z=40 (centro -160)
-                // Plano B: cubre de z=-760 a z=-360 (centro -560)
-                // El jugador empieza en z=0 y va hacia -Z
-
-                function tick() {
-                    const pz = playerEl.object3D.position.z;
-
-                    // Borde trasero de cada plano = centro + SEG/2
-                    const aZ = planeA.object3D.position.z;
-                    const bZ = planeB.object3D.position.z;
-
-                    // Si el plano A quedó más de SEG/2 detrás del jugador, saltar adelante del B
-                    if (aZ - pz > SEG * 0.5) {
-                        // El plano más adelantado es B, A salta adelante de B
-                        planeA.object3D.position.z = Math.min(aZ, bZ) - SEG;
-                    }
-                    // Si el plano B quedó más de SEG/2 detrás del jugador, saltar adelante del A
-                    if (bZ - pz > SEG * 0.5) {
-                        planeB.object3D.position.z = Math.min(aZ, bZ) - SEG;
-                    }
-
-                    requestAnimationFrame(tick);
-                }
-                tick();
-            }
-
-            // Esperar a que la escena esté lista
-            document.querySelector('a-scene').addEventListener('loaded', initPlanes);
-        })();
 
         // ---------- Player Controller ----------
         AFRAME.registerComponent('player-controller', {
@@ -907,17 +904,15 @@
 
                 // estrellas mejoradas (decoración)
                 const stars = document.querySelector('#stars');
-                this.starData = [];
                 for (let i = 0; i < 200; i++) {
                     const s = document.createElement('a-sphere');
                     s.setAttribute('radius', 0.02 + Math.random() * 0.04);
                     s.setAttribute('material', 'color: #ffffff; opacity: ' + (0.5 + Math.random() * 0.5));
                     const x = (Math.random() * 80) - 40;
                     const y = (Math.random() * 30) + 1;
-                    const zOffset = -(Math.random() * 200); // offset relativo al jugador
-                    s.setAttribute('position', `${x} ${y} ${zOffset}`);
+                    const z = (Math.random() * -500);
+                    s.setAttribute('position', `${x} ${y} ${z}`);
                     stars.appendChild(s);
-                    this.starData.push({ el: s, x, y, zOffset });
                 }
 
                 // eventos
@@ -934,33 +929,9 @@
                 this.waveCheckInterval = 0;
                 this.waveTransitioning = true; // evitar que el check dispare durante la transicion
 
-                // Mostrar intro del juego: título + música, luego iniciar wave 1
-                this.centerBannerEl = document.querySelector('#center-banner');
-                const startIntroSequence = () => {
-                    // Hide intro banner and start wave
-                    if (this.centerBannerEl) this.centerBannerEl.classList.remove('show');
-                    // small delay then start
-                    setTimeout(() => {
-                        this.showWaveMessage('WAVE 1 - START!');
-                        this.startCurrentWave();
-                    }, 300);
-                };
-
-                if (this.centerBannerEl) {
-                    this.centerBannerEl.innerHTML = `<div class="title">GALAGA</div><div class="subtitle">Classic Lane Shooters</div>`;
-                    this.centerBannerEl.classList.add('show');
-                    // Ensure music starts with the intro
-                    try { document.dispatchEvent(new Event('game:resumed')); } catch(e) {}
-
-                    // Start on any key or pointer, or auto after 3.5s
-                    const onStart = () => { startIntroSequence(); window.removeEventListener('keydown', onStart); window.removeEventListener('pointerdown', onStart); };
-                    window.addEventListener('keydown', onStart, { once: true });
-                    window.addEventListener('pointerdown', onStart, { once: true });
-                    setTimeout(onStart, 3500);
-                } else {
-                    this.showWaveMessage('WAVE 1 - START!');
-                    setTimeout(() => this.startCurrentWave(), 1500);
-                }
+                // Mostrar mensaje inicial y comenzar wave 1
+                this.showWaveMessage('WAVE 1 - START!');
+                setTimeout(() => this.startCurrentWave(), 1500);
                 
                 // Agregar listener para reiniciar
                 window.addEventListener('keydown', (e) => {
@@ -1165,30 +1136,12 @@
                 const spawner = document.querySelector('[enemy-spawner]');
                 if (spawner && spawner.components && spawner.components['enemy-spawner']) {
                     spawner.components['enemy-spawner'].paused = true;
-                    try { document.dispatchEvent(new Event('game:paused')); } catch(e) {}
-                    try { document.dispatchEvent(new Event('game:ended')); } catch(e) {}
                 }
             },
 
             tick(time, dt) {
                 if (this.gameOver) return;
                 const d = dt / 1000;
-
-                // Mover estrellas para que sigan al jugador (escenario infinito)
-                if (this.starData && this.player) {
-                    const pz = this.player.position.z;
-                    const range = 200;
-                    for (const star of this.starData) {
-                        // Calcular posicion Z absoluta de la estrella
-                        let absZ = pz + star.zOffset;
-                        // Si la estrella quedo muy atras, moverla adelante
-                        if (absZ > pz + 20) {
-                            star.zOffset -= range;
-                            absZ = pz + star.zOffset;
-                        }
-                        star.el.object3D.position.z = absZ;
-                    }
-                }
 
                 // Combo timer
                 if (this.comboTimer > 0) {
@@ -1328,54 +1281,6 @@
             }
         });
     </script>
-    <script>
-        // Background music controller: autoplay when the game resumes/starts, pause on pause/end
-        (function(){
-            const audio = document.querySelector('#bgMusic');
-            if (!audio) return;
-
-            audio.loop = true;
-            audio.volume = 0.6;
-            audio.muted = false;
-
-            // Helper to attempt playback and ignore promise rejection
-            const tryPlay = () => { audio.play().catch(()=>{}); };
-
-            // Try to autoplay immediately (may be blocked by browser)
-            tryPlay();
-
-            // Ensure music starts on first user gesture (click/keydown/pointer)
-            const startMusicOnGesture = () => {
-                tryPlay();
-                window.removeEventListener('pointerdown', startMusicOnGesture);
-                window.removeEventListener('keydown', startMusicOnGesture);
-            };
-            window.addEventListener('pointerdown', startMusicOnGesture, { once: true });
-            window.addEventListener('keydown', startMusicOnGesture, { once: true });
-
-            // Expose a small UI control if present in DOM
-            const musicBtn = document.getElementById('music-toggle');
-            if (musicBtn) {
-                const updateLabel = () => { musicBtn.textContent = audio.paused ? 'Play Music' : 'Pause Music'; };
-                musicBtn.addEventListener('click', () => {
-                    if (audio.paused) {
-                        audio.play().catch(()=>{});
-                    } else {
-                        audio.pause();
-                    }
-                    updateLabel();
-                });
-                // keep label in sync
-                audio.addEventListener('play', updateLabel);
-                audio.addEventListener('pause', updateLabel);
-                updateLabel();
-            }
-
-            document.addEventListener('game:resumed', tryPlay);
-            document.addEventListener('game:paused', () => { try { audio.pause(); } catch(e){} });
-            document.addEventListener('game:ended', () => { try { audio.pause(); } catch(e){} });
-        })();
-    </script>
     <!-- Retro HTML overlay score box -->
     <div id="score-box" aria-live="polite">
         <div class="score-row">
@@ -1391,11 +1296,6 @@
         <div class="score-row">
             <div class="score-label">WAVE</div>
             <div class="score-value wave" id="score-wave">1</div>
-        </div>
-        <div style="height:8px"></div>
-        <div class="score-row">
-            <div class="score-label">MUSIC</div>
-            <div class="score-value"><button id="music-toggle" style="padding:6px 10px;border-radius:4px;">Play Music</button></div>
         </div>
     </div>
     <!-- Center banner for start / wave / gameover messages -->
